@@ -113,10 +113,44 @@ const environment = new Environment(scene, ambientLight, sunLight);
     devButtons.forEach(b => b.classList.toggle('active', b.dataset.phase === phase));
   }
 
+  // ── CLICK con stopPropagation ─────────────────────────────────
+  //  Sin stopPropagation, el clic burbujea hasta document → llega al
+  //  listener del #overlay → controls.lock() intenta reactivar el
+  //  Pointer Lock justo cuando el usuario quería pulsar un botón.
+  //  stopPropagation corta la cadena en el panel y el overlay nunca
+  //  lo ve.
   devPanel.addEventListener('click', (e) => {
+    e.stopPropagation();                         // ← NUEVO: evita reactivar PointerLock
     const btn = e.target.closest('.dev-btn');
     if (!btn) return;
     const phase = btn.dataset.phase;
+    environment.setTime(phase);
+    setActiveBtn(phase);
+  });
+
+  // ── ATAJOS DE TECLADO: U / I / O / P ─────────────────────────
+  //  Permiten cambiar la hora sin ratón, útil mientras el Pointer Lock
+  //  está activo (cursor oculto) o en pausa.
+  //
+  //  Mapa de teclas elegido para no solapar con WASD ni Espacio:
+  //    U → Dawn     (alba)
+  //    I → Noon     (mediodía)   ← "I" de Illuminated / noon
+  //    O → Dusk     (atardecer)
+  //    P → Midnight (noche)      ← "P" de oscuridaD → noche
+  //
+  //  e.code (posición física) en lugar de e.key (carácter) para
+  //  funcionar independientemente del idioma del teclado del usuario.
+  const KEY_PHASE_MAP = {
+    KeyU: 'dawn',
+    KeyI: 'noon',
+    KeyO: 'dusk',
+    KeyP: 'midnight',
+  };
+
+  document.addEventListener('keydown', (e) => {
+    const phase = KEY_PHASE_MAP[e.code];
+    if (!phase) return;
+    e.preventDefault();                          // evita scroll u otros defaults
     environment.setTime(phase);
     setActiveBtn(phase);
   });
