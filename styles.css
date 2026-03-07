@@ -103,8 +103,8 @@
      position: fixed; top: 78px; left: 14px;   /* debajo de #block-info */
      background: rgba(0,0,0,.52); color: #fff;
      padding: 7px 10px; border-radius: 6px;
-     font-size: .70rem; z-index: 200;
-     pointer-events: auto;
+     font-size: .70rem; z-index: 400;          /* ← por encima del #overlay (z:300) */
+     pointer-events: auto;                      /* ← clics activos aunque el padre no los tenga */
      border: 1px solid rgba(255,255,255,.08);
      min-width: 180px;
      user-select: none;
