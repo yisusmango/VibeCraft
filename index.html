@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VibeCraft — Motor Base Fase 1</title>
+  <link rel="stylesheet" href="./styles.css">
+
+  <!-- ── Three.js import map (ES Modules, sin bundler) ── -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three":          "https://unpkg.com/three@0.158.0/build/three.module.js",
+      "three/addons/":  "https://unpkg.com/three@0.158.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+
+  <!-- Mira del jugador (crosshair) -->
+  <div id="crosshair"></div>
+
+  <!-- HUD inferior: coordenadas y conteo de bloques -->
+  <div id="hud">
+    X: <span id="hx">0.0</span>
+    Y: <span id="hy">0.0</span>
+    Z: <span id="hz">0.0</span>
+    &nbsp;|&nbsp; Bloques: <span id="hb">0</span>
+  </div>
+
+  <!-- Panel superior izquierdo: bloque apuntado -->
+  <div id="block-info">
+    <div class="label">Bloque apuntado</div>
+    <div class="value" id="bi">—</div>
+  </div>
+
+  <!-- Panel superior derecho: velocidad Y y estado de suelo -->
+  <div id="state">
+    VY: <span id="svy">0.00</span> &nbsp; Suelo: <span id="sg">—</span>
+  </div>
+
+  <!-- Overlay de inicio / pausa -->
+  <div id="overlay">
+    <h1>VibeCraft</h1>
+    <div class="subtitle">▶ Clic para jugar ◀</div>
+    <div class="grid">
+      <div><span class="key">W A S D</span> &nbsp; Mover</div>
+      <div><span class="key">Espacio</span> &nbsp; Saltar</div>
+      <div><span class="key">Click Izq.</span> &nbsp; Destruir</div>
+      <div><span class="key">Click Der.</span> &nbsp; Colocar</div>
+      <div><span class="key">Ratón</span> &nbsp; Girar vista</div>
+      <div><span class="key">ESC</span> &nbsp; Pausar</div>
+    </div>
+    <div class="note">Motor Voxel Base — Fase 1 &nbsp;·&nbsp; Three.js r158</div>
+  </div>
+
+  <!-- Punto de entrada del juego -->
+  <script type="module" src="./src/main.js"></script>
+
+</body>
+</html>
