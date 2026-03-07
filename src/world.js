@@ -107,6 +107,24 @@ const texGlass = makeTexture(S, (ctx, w, h) => {
   ctx.fillRect(1, 1, 3, 3);
 });
 
+// ── Antorcha (torch) ─────────────────────────────────────────────
+//  La antorcha usa geometría 0.2×0.6×0.2 en vez del cubo estándar,
+//  por lo que sus texturas son simples:
+//    • Palo (4 caras laterales + base): marrón oscuro MeshLambertMaterial
+//    • Llama (cara +Y): amarillo/naranja MeshBasicMaterial para simular
+//      auto-iluminación (no depende de la DirectionalLight del sol).
+//
+//  La PointLight se instancia en addBlock, NO en los materiales;
+//  los materiales son sólo la apariencia visual del mesh.
+
+const texTorchStick = makeTexture(S, (ctx, w, h) => {
+  // Base marrón oscuro del palo
+  noiseFill(ctx, 0, 0, w, h, ['#5a2e0c','#6b3a1f','#4a2008','#7a4828']);
+  // Veta central para dar volumen
+  ctx.fillStyle = 'rgba(255,180,80,0.15)';
+  ctx.fillRect((w / 2 - 1) | 0, 0, 2, h);
+});
+
 // ═══════════════════════════════════════════════════════════════
 //  🧱  GEOMETRÍA Y MATERIALES
 //  Orden de caras BoxGeometry:
@@ -146,6 +164,19 @@ export const MATERIALS = {
     new THREE.MeshLambertMaterial({
       map: texGlass, transparent: true, opacity: 0.55, depthWrite: false,
     })),
+
+  // ── Antorcha (torch) ──────────────────────────────────────────
+  //  Cara +Y (índice 2): MeshBasicMaterial amarillo-naranja para
+  //  simular auto-iluminación. El resto: MeshLambertMaterial marrón.
+  //  La PointLight se gestiona en addBlock / removeBlock.
+  torch: [
+    new THREE.MeshLambertMaterial({ map: texTorchStick }),  // +X
+    new THREE.MeshLambertMaterial({ map: texTorchStick }),  // -X
+    new THREE.MeshBasicMaterial({ color: 0xffdd33 }),       // +Y llama (auto-lit)
+    new THREE.MeshLambertMaterial({ color: 0x3a1a04 }),     // -Y base
+    new THREE.MeshLambertMaterial({ map: texTorchStick }),  // +Z
+    new THREE.MeshLambertMaterial({ map: texTorchStick }),  // -Z
+  ],
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -161,10 +192,53 @@ export const getBlock = (x, y, z) => blockMap.get(blockKey(x, y, z)) ?? null;
 export function addBlock(x, y, z, type = 'grass') {
   const key = blockKey(x, y, z);
   if (blockMap.has(key)) return;
-  const mesh = new THREE.Mesh(BLOCK_GEO, MATERIALS[type] ?? MATERIALS.dirt);
-  mesh.position.set(x, y, z);
-  mesh.castShadow = mesh.receiveShadow = true;
-  mesh.userData = { blockPos: { x, y, z }, blockType: type };
+
+  let mesh;
+
+  if (type === 'torch') {
+    // ── Geometría especial: palo fino 0.2 × 0.6 × 0.2 ─────────────
+    //
+    //  POSICIONAMIENTO VERTICAL:
+    //  El bloque virtual tiene su centro en (x, y, z) y su suelo en y-0.5.
+    //  La antorcha mide 0.6 de alto → su centro debe estar a:
+    //    y_centro = (y - 0.5) + 0.6/2  =  y - 0.2
+    //  Con esto la base del palo toca exactamente el suelo del bloque.
+    //
+    //  POINTLIGHT — gestión de memoria:
+    //  La luz se añade directamente a la escena (no al mesh) para que
+    //  Three.js la incluya en el frustum culling y shadow mapping de
+    //  forma independiente. Se guarda en userData.pointLight para poder
+    //  eliminarla limpiamente en removeBlock sin iterar toda la escena.
+    const torchGeo = new THREE.BoxGeometry(0.2, 0.6, 0.2);
+    mesh = new THREE.Mesh(torchGeo, MATERIALS.torch);
+    mesh.position.set(x, y - 0.2, z);      // base sobre el suelo virtual
+    mesh.castShadow    = false;              // sombra de un palo de 20cm: innecesaria
+    mesh.receiveShadow = false;
+
+    // Luz puntual naranja cálido — origen en la punta de la llama
+    //   Punta del palo: (y - 0.2) + 0.3 = y + 0.1
+    const ptLight = new THREE.PointLight(
+      0xffaa00,   // color: naranja cálido
+      1.5,        // intensidad
+      12,         // distancia de alcance (bloques)
+      1.5         // decay cuadrático → caída más natural
+    );
+    ptLight.position.set(x, y + 0.3, z);   // un poco por encima de la llama
+    _scene.add(ptLight);
+
+    // Guardar referencia: removeBlock la usará para limpiar la luz
+    mesh.userData.pointLight = ptLight;
+
+  } else {
+    // ── Bloque estándar 1×1×1 ──────────────────────────────────────
+    mesh = new THREE.Mesh(BLOCK_GEO, MATERIALS[type] ?? MATERIALS.dirt);
+    mesh.position.set(x, y, z);
+    mesh.castShadow    = true;
+    mesh.receiveShadow = true;
+  }
+
+  mesh.userData.blockPos  = { x, y, z };
+  mesh.userData.blockType = type;
   _scene.add(mesh);
   blockMap.set(key, mesh);
   cacheDirty = true;
@@ -173,6 +247,23 @@ export function addBlock(x, y, z, type = 'grass') {
 export function removeBlock(x, y, z) {
   const mesh = blockMap.get(blockKey(x, y, z));
   if (!mesh) return;
+
+  // ── Gestión de memoria para antorchas ────────────────────────────
+  //
+  //  PROBLEMA SIN ESTE CÓDIGO:
+  //  Si sólo hacemos scene.remove(mesh), la PointLight queda huérfana
+  //  en la escena: Three.js la sigue evaluando cada frame (coste de
+  //  shading), se sigue incluyendo en shadow maps y el GC no puede
+  //  reclamarla porque la escena mantiene una referencia viva.
+  //
+  //  SOLUCIÓN: eliminamos la luz ANTES de quitar el mesh, y llamamos
+  //  dispose() para liberar los recursos WebGL (FBO de sombras, etc.)
+  if (mesh.userData.pointLight) {
+    _scene.remove(mesh.userData.pointLight);          // sacar de la escena
+    mesh.userData.pointLight.dispose?.();             // liberar recursos GPU
+    mesh.userData.pointLight = null;                  // romper la referencia JS
+  }
+
   _scene.remove(mesh);
   blockMap.delete(blockKey(x, y, z));
   cacheDirty = true;
