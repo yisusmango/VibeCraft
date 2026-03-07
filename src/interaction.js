@@ -75,8 +75,33 @@ export function updateRaycaster(camera, controls) {
 //  🖱️  ACCIONES DE INTERACCIÓN
 // ═══════════════════════════════════════════════════════════════
 
-/** Comprueba si un bloque en (bx,by,bz) solaparía con el AABB del jugador. */
-function wouldOverlapPlayer(bx, by, bz) {
+// ── Bloques no sólidos ───────────────────────────────────────────
+//  Estos tipos tienen geometría menor al cubo 1×1×1, por lo que NO
+//  deben bloquear la colocación aunque el jugador esté en la celda
+//  adyacente. Sin esto, wouldOverlapPlayer usaría dimensiones 1×1×1
+//  y rechazaría colocar una antorcha junto al jugador aunque el palo
+//  de 0.2×0.6×0.2 no le alcance físicamente.
+//
+//  NOTA: player.js sigue usando hasBlock() para colisiones, lo que
+//  significa que la AABB del jugador seguirá chocando con la celda
+//  de la antorcha (1×1×1 lógica). Esto es un trade-off aceptable
+//  para esta fase; en una fase futura se puede añadir un mapa de
+//  colisión por tipo de bloque en config.js.
+const NON_SOLID_TYPES = new Set(['torch']);
+
+/**
+ * Comprueba si un bloque en (bx,by,bz) solaparía con el AABB del jugador.
+ * Si el bloque es de tipo no sólido (antorcha, etc.) siempre devuelve false.
+ * @param {number} bx
+ * @param {number} by
+ * @param {number} bz
+ * @param {string} [blockType='grass'] — tipo del bloque a colocar
+ * @returns {boolean}
+ */
+function wouldOverlapPlayer(bx, by, bz, blockType = 'grass') {
+  // Los bloques no sólidos pueden colocarse junto al jugador sin problema
+  if (NON_SOLID_TYPES.has(blockType)) return false;
+
   const { x: px, y: py, z: pz } = player.position;
   return (
     px + HALF_W               > bx - 0.5 && px - HALF_W               < bx + 0.5 &&
@@ -101,7 +126,9 @@ function destroyBlock() {
  *   Ej: normal (0,1,0) → coloca encima; normal (1,0,0) → coloca a la derecha
  *
  * BLOQUE A COLOCAR: getCurrentBlockType() devuelve el tipo del slot
- * activo en el Hotbar, permitiendo colocar cualquiera de los 7 materiales.
+ * activo en el Hotbar, permitiendo colocar cualquiera de los materiales.
+ * Se pasa el tipo a wouldOverlapPlayer para que bloques no sólidos como
+ * la antorcha puedan colocarse junto al jugador sin ser rechazados.
  */
 function placeBlock() {
   if (!targetBlock || !targetFaceNormal) return;
@@ -110,11 +137,12 @@ function placeBlock() {
   const ny = targetBlock.y + Math.round(targetFaceNormal.y);
   const nz = targetBlock.z + Math.round(targetFaceNormal.z);
 
-  if (hasBlock(nx, ny, nz))           return;
-  if (wouldOverlapPlayer(nx, ny, nz)) return;
+  const selectedType = getCurrentBlockType();   // ← leer tipo UNA vez
 
-  // ── CAMBIO CLAVE: usa el bloque seleccionado en el Hotbar ──────
-  addBlock(nx, ny, nz, getCurrentBlockType());
+  if (hasBlock(nx, ny, nz))                          return;
+  if (wouldOverlapPlayer(nx, ny, nz, selectedType))  return;   // ← pasar tipo
+
+  addBlock(nx, ny, nz, selectedType);
 }
 
 // ═══════════════════════════════════════════════════════════════
