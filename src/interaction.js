@@ -121,14 +121,14 @@ function destroyBlock() {
 /**
  * Coloca un bloque en la cara adyacente del bloque apuntado (clic derecho).
  *
- * LÓGICA DE POSICIÓN:
- *   nuevoBloque = bloqueApuntado + round(normalCara)
- *   Ej: normal (0,1,0) → coloca encima; normal (1,0,0) → coloca a la derecha
+ * CAMBIO: se pasa `targetFaceNormal` como quinto argumento a addBlock.
+ * world.js lo usa para determinar la orientación de la antorcha:
+ *   • normal (0,+1,0) → suelo  → antorcha vertical
+ *   • normal (0,−1,0) → techo  → colocación cancelada en world.js
+ *   • normal (±1,0,0) → pared  → antorcha inclinada 30° en eje Z
+ *   • normal (0,0,±1) → pared  → antorcha inclinada 30° en eje X
  *
- * BLOQUE A COLOCAR: getCurrentBlockType() devuelve el tipo del slot
- * activo en el Hotbar, permitiendo colocar cualquiera de los materiales.
- * Se pasa el tipo a wouldOverlapPlayer para que bloques no sólidos como
- * la antorcha puedan colocarse junto al jugador sin ser rechazados.
+ * Para bloques normales el normal se ignora completamente.
  */
 function placeBlock() {
   if (!targetBlock || !targetFaceNormal) return;
@@ -137,12 +137,13 @@ function placeBlock() {
   const ny = targetBlock.y + Math.round(targetFaceNormal.y);
   const nz = targetBlock.z + Math.round(targetFaceNormal.z);
 
-  const selectedType = getCurrentBlockType();   // ← leer tipo UNA vez
+  const selectedType = getCurrentBlockType();
 
   if (hasBlock(nx, ny, nz))                          return;
-  if (wouldOverlapPlayer(nx, ny, nz, selectedType))  return;   // ← pasar tipo
+  if (wouldOverlapPlayer(nx, ny, nz, selectedType))  return;
 
-  addBlock(nx, ny, nz, selectedType);
+  // ── CAMBIO: pasar el vector normal para orientar la antorcha ──
+  addBlock(nx, ny, nz, selectedType, targetFaceNormal);
 }
 
 // ═══════════════════════════════════════════════════════════════
