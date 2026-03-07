@@ -98,6 +98,33 @@ initUI(controls);
 //  frame a frame, pero necesita que existan).
 const environment = new Environment(scene, ambientLight, sunLight);
 
+// ── [NUEVO] ── Dev Tools: botones de control de tiempo ──────────
+//  Los botones están en el DOM (#dev-tools) y son accesibles incluso
+//  sin Pointer Lock. Delegamos en un único listener en el contenedor
+//  padre (event delegation) para evitar 4 addEventListener separados.
+//
+//  Flujo: click en .dev-btn → lee data-phase → llama setTime() en
+//  environment → marca el botón activo visualmente.
+{
+  const devPanel   = document.getElementById('dev-tools');
+  const devButtons = devPanel.querySelectorAll('.dev-btn');
+
+  function setActiveBtn(phase) {
+    devButtons.forEach(b => b.classList.toggle('active', b.dataset.phase === phase));
+  }
+
+  devPanel.addEventListener('click', (e) => {
+    const btn = e.target.closest('.dev-btn');
+    if (!btn) return;
+    const phase = btn.dataset.phase;
+    environment.setTime(phase);
+    setActiveBtn(phase);
+  });
+
+  // Marcar "alba" como activa al arrancar (dayT inicial = 0.0 = dawn)
+  setActiveBtn('dawn');
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  📐  RESIZE
 // ═══════════════════════════════════════════════════════════════

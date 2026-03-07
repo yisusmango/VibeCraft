@@ -397,6 +397,35 @@ export class Environment {
   }
 
   // ─────────────────────────────────────────────────────────────
+  //  ⏱️  setTime(phase) — herramienta de desarrollo
+  //  ─────────────────────────────────────────────────────────────
+  //  Salta el reloj interno a una de las 4 fases clave.
+  //  El ciclo continúa avanzando desde ese punto.
+  //
+  //  @param {'dawn'|'noon'|'dusk'|'midnight'} phase
+  //
+  //  Fases y su dayT:
+  //    dawn     → 0.00   (amanecer)
+  //    noon     → 0.25   (mediodía)
+  //    dusk     → 0.50   (atardecer)
+  //    midnight → 0.75   (medianoche)
+  // ─────────────────────────────────────────────────────────────
+  setTime(phase) {
+    const MAP = { dawn: 0.0, noon: 0.25, dusk: 0.50, midnight: 0.75 };
+    if (phase in MAP) {
+      this._dayT = MAP[phase];
+      // Forzar una actualización inmediata del color para que el
+      // cambio sea instantáneo y no espere al próximo frame.
+      this._interpolatePhase();
+      this._scene.background.copy(this._curSky);
+      this._scene.fog.color.copy(this._curFog);
+      this._ambient.color.copy(this._curAmbient);
+      this._sun.color.copy(this._curSun);
+      this._pivot.rotation.x = this._dayT * Math.PI * 2;
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
   //  📡  Getter: hora del día normalizada [0, 1) para HUD u otros módulos
   // ─────────────────────────────────────────────────────────────
   get dayT() { return this._dayT; }

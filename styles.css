@@ -94,6 +94,59 @@
    #block-info .label { color: #aaa; font-size: .65rem; text-transform: uppercase; letter-spacing: .08em; }
    #block-info .value { color: #88ff88; font-weight: bold; margin-top: 2px; }
    
+   /* ── DEV TOOLS ─────────────────────────────────────────────────── */
+   /*  Panel retro coherente con el HUD: misma tipografía monospace,
+       mismo fondo oscuro translúcido, borde bevel para integrarse.
+       pointer-events: auto para que los botones funcionen sin
+       Pointer Lock activo.                                             */
+   #dev-tools {
+     position: fixed; top: 78px; left: 14px;   /* debajo de #block-info */
+     background: rgba(0,0,0,.52); color: #fff;
+     padding: 7px 10px; border-radius: 6px;
+     font-size: .70rem; z-index: 200;
+     pointer-events: auto;
+     border: 1px solid rgba(255,255,255,.08);
+     min-width: 180px;
+     user-select: none;
+   }
+   .dev-label {
+     color: #aaa; font-size: .65rem;
+     text-transform: uppercase; letter-spacing: .08em;
+     margin-bottom: 5px;
+     font-family: 'Courier New', monospace;
+   }
+   .dev-row { display: flex; gap: 4px; flex-wrap: wrap; }
+   .dev-btn {
+     font-family: 'Courier New', monospace;
+     font-size: .65rem; color: #ddd;
+     background: rgba(60,60,60,0.80);
+     border: none; cursor: pointer;
+     padding: 3px 6px; border-radius: 3px;
+     letter-spacing: .03em;
+     border-top:    1px solid rgba(0,0,0,0.60);
+     border-left:   1px solid rgba(0,0,0,0.60);
+     border-bottom: 1px solid rgba(255,255,255,0.16);
+     border-right:  1px solid rgba(255,255,255,0.16);
+     transition: background .1s, color .1s;
+   }
+   .dev-btn:hover  { background: rgba(100,100,100,0.85); color: #fff; }
+   .dev-btn:active {
+     border-top:    1px solid rgba(255,255,255,0.20);
+     border-left:   1px solid rgba(255,255,255,0.20);
+     border-bottom: 1px solid rgba(0,0,0,0.60);
+     border-right:  1px solid rgba(0,0,0,0.60);
+     background: rgba(40,40,40,0.90); color: #88ff88;
+   }
+   /* Fase activa: borde verde tenue para indicar la hora actual */
+   .dev-btn.active {
+     color: #88ff88;
+     border-top:    1px solid rgba(80,180,80,0.50);
+     border-left:   1px solid rgba(80,180,80,0.50);
+     border-bottom: 1px solid rgba(20,80,20,0.60);
+     border-right:  1px solid rgba(20,80,20,0.60);
+     background: rgba(30,60,30,0.80);
+   }
+   
    /* ── ESTADO (vel Y / suelo) ────────────────────────────────────── */
    #state {
      position: fixed; top: 14px; right: 14px;
