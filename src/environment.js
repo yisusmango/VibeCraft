@@ -15,14 +15,17 @@ import * as THREE from 'three';
 //  ⏱️  CONSTANTES DE TIEMPO
 //  ─────────────────────────────────────────────────────────────
 //  DAY_DURATION  → duración de un ciclo completo en segundos reales.
-//                  120 s = 2 minutos; cómodo para testear.
+//                  1200 s = 20 minutos; igual que el juego original.
 //  Las 4 fases se distribuyen uniformemente cada 0.25 del ciclo:
 //    0.00 → Amanecer   (dawn)
 //    0.25 → Mediodía   (noon)
 //    0.50 → Atardecer  (dusk)
 //    0.75 → Medianoche (midnight)
 // ═══════════════════════════════════════════════════════════════
-const DAY_DURATION  = 120;  // segundos reales por ciclo completo
+// ── [BUGFIX 2] ── Ciclo de 20 minutos reales (1200 s).
+//   Antes estaba en 120 s (2 min) útil para desarrollo.
+//   Cambia a 60 para testing rápido, a 1200 para producción.
+const DAY_DURATION  = 1200;  // segundos reales por ciclo completo
 
 // ─── Paleta de colores para cada fase del día ──────────────────
 //  sky    → scene.background / scene.fog.color
@@ -243,8 +246,18 @@ export class Environment {
       side:        THREE.DoubleSide,
     });
     this._sunMesh = new THREE.Mesh(sunGeo, sunMat);
-    // +Z = frente del pivote → el sol sale por el lado positivo del eje X
-    this._sunMesh.position.set(0, 0, 110);
+    // ── [BUGFIX 1] ── Ciclo invertido corregido.
+    //   PROBLEMA: con rotation.x = dayT×2π, al mediodía (dayT=0.25)
+    //   rotation.x = π/2. Un punto en local (0,0,+110) se transforma
+    //   a mundo (0, -110, 0) → ¡bajo tierra! El sol y la luna estaban
+    //   invertidos respecto al ciclo de color del cielo.
+    //
+    //   SOLUCIÓN: intercambiar los signos de Z.
+    //   Con el sol en Z=-110, al mediodía (rotation.x=π/2):
+    //     world_Y = -(-110)×sin(π/2) = +110  → SOL ARRIBA ✓
+    //   Con la luna en Z=+110, a medianoche (rotation.x=3π/2):
+    //     world_Y = -(+110)×sin(3π/2) = +110 → LUNA ARRIBA ✓
+    this._sunMesh.position.set(0, 0, -110);   // ← era +110, ahora -110
     this._pivot.add(this._sunMesh);
 
     // ── Luna ─────────────────────────────────────────────────────
@@ -258,8 +271,7 @@ export class Environment {
       side:        THREE.DoubleSide,
     });
     this._moonMesh = new THREE.Mesh(moonGeo, moonMat);
-    // Opuesto al sol (-Z): cuando el sol está visible, la luna no
-    this._moonMesh.position.set(0, 0, -110);
+    this._moonMesh.position.set(0, 0, 110);   // ← era -110, ahora +110
     this._pivot.add(this._moonMesh);
   }
 
