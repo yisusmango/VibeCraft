@@ -1,68 +1,211 @@
 // ═══════════════════════════════════════════════════════════════
 //  src/ui.js
 //  Responsabilidades:
-//    • Gestión del overlay de inicio / pausa
-//    • Actualización del HUD (coordenadas, contador de bloques)
-//    • Actualización del panel de bloque apuntado
-//    • Actualización del panel de estado (velocidad Y, suelo)
-//
-//  Este módulo no toca la escena Three.js; solo manipula el DOM.
-//  Recibe datos del jugador y del estado de interacción a través
-//  de los parámetros de updateHUD (no importa los módulos
-//  directamente para evitar acoplamientos circulares).
+//    • Overlay de inicio / pausa
+//    • HUD de coordenadas y contador de bloques
+//    • Hotbar: 9 slots con iconos procedurales, selección 1-9
+//    • Exporta getCurrentBlockType() para interaction.js
 // ═══════════════════════════════════════════════════════════════
 
-// ── Referencias DOM (guardadas en variables para evitar
-//    llamadas a getElementById en cada frame a 60 fps) ─────────
-const elHX  = document.getElementById('hx');   // coordenada X
-const elHY  = document.getElementById('hy');   // coordenada Y
-const elHZ  = document.getElementById('hz');   // coordenada Z
-const elHB  = document.getElementById('hb');   // contador de bloques
-const elBI  = document.getElementById('bi');   // bloque apuntado
-const elVY  = document.getElementById('svy');  // velocidad Y
-const elSG  = document.getElementById('sg');   // estado de suelo
-
+// ── Referencias DOM fijas ────────────────────────────────────────
+const elHX      = document.getElementById('hx');
+const elHY      = document.getElementById('hy');
+const elHZ      = document.getElementById('hz');
+const elHB      = document.getElementById('hb');
+const elBI      = document.getElementById('bi');
+const elVY      = document.getElementById('svy');
+const elSG      = document.getElementById('sg');
 const overlayEl = document.getElementById('overlay');
 
 // ═══════════════════════════════════════════════════════════════
-//  🚀  INICIALIZACIÓN
+//  🎒  HOTBAR — DEFINICIÓN DE SLOTS
+//  Modifica este array para reordenar o cambiar los bloques.
+//  Los 9 valores deben coincidir con claves en MATERIALS (world.js).
+// ═══════════════════════════════════════════════════════════════
+
+export const HOTBAR_BLOCKS = [
+  'grass',   // tecla 1
+  'dirt',    // tecla 2
+  'stone',   // tecla 3
+  'wood',    // tecla 4
+  'leaves',  // tecla 5
+  'sand',    // tecla 6
+  'glass',   // tecla 7
+  'wood',    // tecla 8  (repetición útil para construcción rápida)
+  'stone',   // tecla 9
+];
+
+// Slot seleccionado actualmente (0-indexado)
+let currentSlot = 0;
+
+/**
+ * Devuelve el tipo de bloque del slot activo.
+ * Importado por interaction.js para usarlo en placeBlock().
+ * @returns {string} — clave de MATERIALS, ej: 'grass', 'stone', etc.
+ */
+export const getCurrentBlockType = () => HOTBAR_BLOCKS[currentSlot];
+
+// ═══════════════════════════════════════════════════════════════
+//  🎨  PINTORES DE ICONOS — Canvas 2D (sin imágenes externas)
+//  Cada función recibe (ctx, w, h) y dibuja el icono del bloque.
+//  Usamos la misma paleta de colores que las texturas 3D para
+//  coherencia visual entre el mundo y el inventario.
+// ═══════════════════════════════════════════════════════════════
+
+/** Rellena región con píxeles aleatorios de una paleta. */
+function iconNoise(ctx, x0, y0, w, h, palette) {
+  for (let y = y0; y < y0 + h; y++)
+    for (let x = x0; x < x0 + w; x++) {
+      ctx.fillStyle = palette[(Math.random() * palette.length) | 0];
+      ctx.fillRect(x, y, 1, 1);
+    }
+}
+
+const ICON_PAINTERS = {
+  grass(ctx, w, h) {
+    // mitad inferior: tierra
+    iconNoise(ctx, 0, (h * 0.45) | 0, w, h - ((h * 0.45) | 0),
+      ['#8B5E3C','#7a4d2b','#9a6e4c']);
+    // mitad superior: hierba
+    iconNoise(ctx, 0, 0, w, (h * 0.45) | 0,
+      ['#5d8a3c','#4a7a2b','#6a9a49','#3d6a2b']);
+  },
+  dirt(ctx, w, h) {
+    iconNoise(ctx, 0, 0, w, h, ['#8B5E3C','#7a4d2b','#9a6e4c','#6a3d1c']);
+  },
+  stone(ctx, w, h) {
+    iconNoise(ctx, 0, 0, w, h, ['#888','#777','#999','#6e6e6e','#aaa']);
+    // grieta decorativa
+    ctx.fillStyle = '#505050';
+    ctx.fillRect((w * 0.3) | 0, (h * 0.2) | 0, 1, (h * 0.4) | 0);
+    ctx.fillRect((w * 0.6) | 0, (h * 0.5) | 0, 1, (h * 0.3) | 0);
+  },
+  wood(ctx, w, h) {
+    iconNoise(ctx, 0, 0, w, h, ['#8B6340','#7a5230','#9a7352','#6e4828']);
+    // vetas verticales
+    const step = Math.max(1, (w / 4) | 0);
+    for (let x = 0; x < w; x += step) {
+      ctx.fillStyle = 'rgba(0,0,0,0.20)';
+      ctx.fillRect(x, 0, 1, h);
+    }
+    ctx.fillStyle = 'rgba(0,0,0,0.15)';
+    ctx.fillRect(0, 0, w, 2);
+    ctx.fillRect(0, h - 2, w, 2);
+  },
+  leaves(ctx, w, h) {
+    iconNoise(ctx, 0, 0, w, h, ['#2d6e1e','#1f5214','#3a7e28','#255c18','#4a8a32']);
+    for (let i = 0; i < 8; i++) {
+      ctx.fillStyle = 'rgba(120,220,80,0.32)';
+      ctx.fillRect((Math.random() * (w - 2)) | 0, (Math.random() * (h - 2)) | 0, 2, 2);
+    }
+  },
+  sand(ctx, w, h) {
+    iconNoise(ctx, 0, 0, w, h, ['#DDD06A','#ccc060','#e8da78','#d4ca64']);
+  },
+  glass(ctx, w, h) {
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = 'rgba(180,220,242,0.38)';
+    ctx.fillRect(0, 0, w, h);
+    // bordes bevel
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.fillRect(0, 0, w, 2); ctx.fillRect(0, 0, 2, h);
+    ctx.fillStyle = 'rgba(200,235,255,0.50)';
+    ctx.fillRect(0, h - 2, w, 2); ctx.fillRect(w - 2, 0, 2, h);
+    // brillo especular
+    ctx.fillStyle = 'rgba(255,255,255,1)';
+    ctx.fillRect(2, 2, 4, 4);
+  },
+};
+
+// ── Fallback: bloque desconocido → violeta ───────────────────────
+function paintUnknown(ctx, w, h) {
+  ctx.fillStyle = '#8b00ff';
+  ctx.fillRect(0, 0, w, h);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  🏗️  GENERACIÓN DINÁMICA DEL HOTBAR EN EL DOM
+// ═══════════════════════════════════════════════════════════════
+
+function buildHotbar() {
+  const hotbar = document.getElementById('hotbar');
+  hotbar.innerHTML = '';   // limpiar por si se llama más de una vez
+
+  HOTBAR_BLOCKS.forEach((blockType, i) => {
+    const slot = document.createElement('div');
+    slot.className   = 'hotbar-slot' + (i === 0 ? ' selected' : '');
+    slot.dataset.slot = String(i);
+
+    // ── Icono: canvas de 36×36 dibujado con el pintor del bloque ──
+    const canvas  = document.createElement('canvas');
+    canvas.width  = 36;
+    canvas.height = 36;
+    const ctx     = canvas.getContext('2d');
+    const painter = ICON_PAINTERS[blockType] ?? paintUnknown;
+    painter(ctx, 36, 36);
+    slot.appendChild(canvas);
+
+    // ── Etiqueta de número (1-9) en la esquina inferior-derecha ──
+    const num = document.createElement('span');
+    num.className   = 'slot-number';
+    num.textContent = String(i + 1);
+    slot.appendChild(num);
+
+    hotbar.appendChild(slot);
+  });
+}
+
+/** Actualiza el resaltado visual del slot seleccionado. */
+function setSlot(index) {
+  const slots = document.querySelectorAll('.hotbar-slot');
+  slots[currentSlot]?.classList.remove('selected');
+  currentSlot = index;
+  slots[currentSlot]?.classList.add('selected');
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  🚀  INICIALIZACIÓN PÚBLICA
 // ═══════════════════════════════════════════════════════════════
 
 /**
- * Conecta el overlay con PointerLockControls:
- *   • lock   → ocultar overlay (inicio del juego)
- *   • unlock → mostrar overlay (pausa / ESC)
- *   • click  → solicitar bloqueo del puntero
+ * Inicializa toda la UI:
+ *   1. Conecta overlay ↔ PointerLockControls
+ *   2. Construye los slots del Hotbar con sus iconos
+ *   3. Registra teclas 1-9 para cambiar el slot activo
  *
  * @param {object} controls — PointerLockControls
  */
 export function initUI(controls) {
+  // Overlay de inicio / pausa
   controls.addEventListener('lock',   () => { overlayEl.style.display = 'none'; });
   controls.addEventListener('unlock', () => { overlayEl.style.display = 'flex'; });
   overlayEl.addEventListener('click', () => controls.lock());
+
+  // Hotbar
+  buildHotbar();
+
+  // Teclas 1-9: cambian el slot activo
+  document.addEventListener('keydown', (e) => {
+    const n = parseInt(e.key, 10);
+    if (n >= 1 && n <= HOTBAR_BLOCKS.length) {
+      e.preventDefault();
+      setSlot(n - 1);
+    }
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  🖥️  ACTUALIZACIÓN DEL HUD — llamar cada frame
 // ═══════════════════════════════════════════════════════════════
 
-/**
- * Refresca todos los paneles del HUD con los datos actuales.
- *
- * @param {object}      player      — Estado del jugador (player.js)
- * @param {Map}         blockMap    — Mapa del mundo (world.js)
- * @param {object|null} targetBlock — Bloque apuntado {x,y,z} o null
- */
 export function updateHUD(player, blockMap, targetBlock) {
   elHX.textContent = player.position.x.toFixed(1);
   elHY.textContent = player.position.y.toFixed(1);
   elHZ.textContent = player.position.z.toFixed(1);
   elHB.textContent = blockMap.size;
-
   elBI.textContent = targetBlock
     ? `(${targetBlock.x}, ${targetBlock.y}, ${targetBlock.z})`
     : '—';
-
   elVY.textContent = player.velocity.y.toFixed(2);
   elSG.textContent = player.isOnGround ? '✓' : '✗';
 }
