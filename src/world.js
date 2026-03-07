@@ -283,18 +283,31 @@ export function addBlock(x, y, z, type = 'grass', normal = null) {
       lightX = x + 0.15;   lightY = y + 0.08;
 
     } else if (normal.z === 1) {
-      // ── Pared +Z : base en z−0.5, inclina hacia +Z ─────────────
-      //   rotation.x  negativo → cima del palo se mueve hacia +Z
-      //   (regla mano derecha: eje X, rotación neg → +Y inclina a +Z)
+      // ── Pared +Z : base en z−0.5, llama se aleja hacia +Z ─────────
+      //
+      //  BUG ANTERIOR: rotation.x = -TILT hacía que la llama apuntase
+      //  hacia -Z (¡hacia la pared!). Con rotation.x = -θ alrededor de X:
+      //    Z_llama = +0.3 × sin(-π/6) = -0.15  → llama hacia -Z  ✗
+      //
+      //  CORRECCIÓN: rotation.x = +TILT → llama hacia +Z:
+      //    Z_llama = +0.3 × sin(+π/6) = +0.15  → llama hacia +Z  ✓
+      //    Z_base  = -0.3 × sin(+π/6) = -0.15  → base  hacia -Z
+      //    base_world_z = (z - WALL_OFF) + (-0.15) = z - 0.50  ✓
       mesh.position.set(x, WALL_Y, z - WALL_OFF);
-      mesh.rotation.x = -TILT;
-      lightZ = z - 0.15;   lightY = y + 0.08;
+      mesh.rotation.x = +TILT;               // ← era -TILT (invertido)
+      lightZ = z - 0.20;   lightY = y + 0.10;
 
     } else if (normal.z === -1) {
-      // ── Pared −Z : base en z+0.5, inclina hacia −Z ─────────────
+      // ── Pared −Z : base en z+0.5, llama se aleja hacia −Z ─────────
+      //
+      //  BUG ANTERIOR: rotation.x = +TILT → llama hacia +Z (hacia pared). ✗
+      //  CORRECCIÓN:   rotation.x = -TILT → llama hacia -Z            ✓
+      //    Z_llama = +0.3 × sin(-π/6) = -0.15  → hacia -Z  ✓
+      //    Z_base  = -0.3 × sin(-π/6) = +0.15
+      //    base_world_z = (z + WALL_OFF) + 0.15 = z + 0.50           ✓
       mesh.position.set(x, WALL_Y, z + WALL_OFF);
-      mesh.rotation.x = TILT;                 // cima del palo → −Z
-      lightZ = z + 0.15;   lightY = y + 0.08;
+      mesh.rotation.x = -TILT;               // ← era +TILT (invertido)
+      lightZ = z + 0.20;   lightY = y + 0.10;
     }
 
     // PointLight en la posición aproximada de la llama
