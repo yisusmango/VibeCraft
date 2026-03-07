@@ -189,44 +189,123 @@ const blockKey = (x, y, z) => `${x},${y},${z}`;
 export const hasBlock = (x, y, z) => blockMap.has(blockKey(x, y, z));
 export const getBlock = (x, y, z) => blockMap.get(blockKey(x, y, z)) ?? null;
 
-export function addBlock(x, y, z, type = 'grass') {
+/**
+ * Devuelve el tipo (string) del bloque en (x,y,z), o null si no existe.
+ * Usado por player.js para distinguir bloques sólidos de no sólidos
+ * sin iterar el mapa entero — coste O(1) gracias al Map.
+ * @returns {string|null}  ej. 'grass' | 'torch' | null
+ */
+export function getBlockType(x, y, z) {
+  const mesh = blockMap.get(blockKey(x, y, z));
+  return mesh ? mesh.userData.blockType : null;
+}
+
+export function addBlock(x, y, z, type = 'grass', normal = null) {
   const key = blockKey(x, y, z);
   if (blockMap.has(key)) return;
 
   let mesh;
 
   if (type === 'torch') {
-    // ── Geometría especial: palo fino 0.2 × 0.6 × 0.2 ─────────────
+    // ═══════════════════════════════════════════════════════════
+    //  🔦  LÓGICA DE COLOCACIÓN DE ANTORCHAS
+    //  ─────────────────────────────────────────────────────────
+    //  La antorcha tiene tres modos según la cara golpeada (normal):
     //
-    //  POSICIONAMIENTO VERTICAL:
-    //  El bloque virtual tiene su centro en (x, y, z) y su suelo en y-0.5.
-    //  La antorcha mide 0.6 de alto → su centro debe estar a:
-    //    y_centro = (y - 0.5) + 0.6/2  =  y - 0.2
-    //  Con esto la base del palo toca exactamente el suelo del bloque.
+    //    (0,+1, 0)  → SUELO   : vertical, centrada en la celda
+    //    (0,-1, 0)  → TECHO   : PROHIBIDO → return sin colocar
+    //    (±1, 0, 0) → PARED X : inclinada ±30° en Z, pegada a pared X
+    //    (0, 0,±1)  → PARED Z : inclinada ±30° en X, pegada a pared Z
     //
-    //  POINTLIGHT — gestión de memoria:
-    //  La luz se añade directamente a la escena (no al mesh) para que
-    //  Three.js la incluya en el frustum culling y shadow mapping de
-    //  forma independiente. Se guarda en userData.pointLight para poder
-    //  eliminarla limpiamente en removeBlock sin iterar toda la escena.
+    //  GEOMETRÍA DE REFERENCIA:
+    //  BoxGeometry(0.2, 0.6, 0.2) → palo de 0.6 unidades en +Y.
+    //  En espacio local:  base = (0, -0.3, 0), llama = (0, +0.3, 0).
+    //
+    //  MATH DE INCLINACIÓN (pared eje X, normal +X):
+    //  ─────────────────────────────────────────────
+    //  Queremos que el palo se incline 30° (π/6) alejándose de la pared.
+    //  rotation.z = −π/6 → el extremo +Y (llama) se desplaza en +X:
+    //    Δx_llama =  0.3 × sin(π/6) = +0.15  (alejándose de pared)
+    //    Δy_llama =  0.3 × cos(π/6) = +0.26
+    //    Δx_base  = −0.3 × sin(π/6) = −0.15  (entrando en pared)
+    //    Δy_base  = −0.3 × cos(π/6) = −0.26
+    //
+    //  Para que la BASE quede justo sobre la superficie de la pared
+    //  (en x = nx − 0.5):
+    //    pos.x_base = pos.x_centro + Δx_base = nx − 0.5
+    //    → pos.x_centro = nx − 0.5 + 0.15 = nx − 0.35
+    //
+    //  Para Y: la antorcha aparece en el tercio superior del bloque,
+    //  como en Minecraft. El centro del palo queda a nx-0.15 de altura
+    //  sobre el suelo del bloque (y − 0.5), es decir:
+    //    pos.y_centro = (y − 0.5) + 0.3 + Δy_base_corr ≈ y − 0.15
+    //
+    //  La misma lógica simétrica se aplica para −X, +Z, −Z.
+    //  ─────────────────────────────────────────────────────────
+    //
+    //  POSICIÓN DE LA POINTLIGHT (llama):
+    //  llama_world = pos_centro + rotate(TILT, [0,+0.3,0])
+    //  Para simplificar usamos una aproximación que es visualmente
+    //  precisa:  offset ≈ 0.18 en el eje del normal, 0.10 en Y.
+
+    // ── Techo: prohibido ────────────────────────────────────────
+    if (normal && normal.y === -1) return;   // cancela silenciosamente
+
+    const TILT       = Math.PI / 6;   // 30°
+    const WALL_OFF   = 0.35;          // offset del centro hacia la pared
+    const WALL_Y     = y - 0.15;      // altura centro para pared
+
     const torchGeo = new THREE.BoxGeometry(0.2, 0.6, 0.2);
     mesh = new THREE.Mesh(torchGeo, MATERIALS.torch);
-    mesh.position.set(x, y - 0.2, z);      // base sobre el suelo virtual
-    mesh.castShadow    = false;              // sombra de un palo de 20cm: innecesaria
+    mesh.castShadow    = false;
     mesh.receiveShadow = false;
 
-    // Luz puntual naranja cálido — origen en la punta de la llama
-    //   Punta del palo: (y - 0.2) + 0.3 = y + 0.1
-    const ptLight = new THREE.PointLight(
-      0xffaa00,   // color: naranja cálido
-      1.5,        // intensidad
-      12,         // distancia de alcance (bloques)
-      1.5         // decay cuadrático → caída más natural
-    );
-    ptLight.position.set(x, y + 0.3, z);   // un poco por encima de la llama
-    _scene.add(ptLight);
+    // Posición y rotación según la normal de la cara golpeada
+    let lightX = x, lightY = y + 0.15, lightZ = z;
 
-    // Guardar referencia: removeBlock la usará para limpiar la luz
+    if (!normal || normal.y === 1) {
+      // ── Suelo: vertical ────────────────────────────────────────
+      //   Centro del palo a y−0.2 → base en y−0.5 (suelo de celda)
+      mesh.position.set(x, y - 0.2, z);
+      // rotation queda (0,0,0) por defecto
+      lightX = x;   lightY = y + 0.12;   lightZ = z;
+
+    } else if (normal.x === 1) {
+      // ── Pared +X : base en x−0.5, inclina hacia +X ─────────────
+      mesh.position.set(x - WALL_OFF, WALL_Y, z);
+      mesh.rotation.z = -TILT;                // cima del palo → +X
+      lightX = x - 0.15;   lightY = y + 0.08;
+
+    } else if (normal.x === -1) {
+      // ── Pared −X : base en x+0.5, inclina hacia −X ─────────────
+      mesh.position.set(x + WALL_OFF, WALL_Y, z);
+      mesh.rotation.z = TILT;                 // cima del palo → −X
+      lightX = x + 0.15;   lightY = y + 0.08;
+
+    } else if (normal.z === 1) {
+      // ── Pared +Z : base en z−0.5, inclina hacia +Z ─────────────
+      //   rotation.x  negativo → cima del palo se mueve hacia +Z
+      //   (regla mano derecha: eje X, rotación neg → +Y inclina a +Z)
+      mesh.position.set(x, WALL_Y, z - WALL_OFF);
+      mesh.rotation.x = -TILT;
+      lightZ = z - 0.15;   lightY = y + 0.08;
+
+    } else if (normal.z === -1) {
+      // ── Pared −Z : base en z+0.5, inclina hacia −Z ─────────────
+      mesh.position.set(x, WALL_Y, z + WALL_OFF);
+      mesh.rotation.x = TILT;                 // cima del palo → −Z
+      lightZ = z + 0.15;   lightY = y + 0.08;
+    }
+
+    // PointLight en la posición aproximada de la llama
+    const ptLight = new THREE.PointLight(
+      0xffaa00,   // naranja cálido
+      1.5,        // intensidad
+      12,         // distancia (bloques)
+      1.5         // decay cuadrático
+    );
+    ptLight.position.set(lightX, lightY, lightZ);
+    _scene.add(ptLight);
     mesh.userData.pointLight = ptLight;
 
   } else {
