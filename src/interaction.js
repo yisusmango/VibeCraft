@@ -32,10 +32,16 @@ const raycaster  = new THREE.Raycaster();
 raycaster.far    = CONFIG.MAX_REACH;
 const NDC_CENTER = new THREE.Vector2(0, 0);
 
-// Wireframe de selección: 1.03 > 1 para evitar z-fighting
+// ── Wireframe de selección ───────────────────────────────────────
+//  Geometría base 1×1×1 (UNIT CUBE). La escala se ajusta por frame
+//  en updateRaycaster() según el tipo de bloque apuntado:
+//    • bloque sólido  → scale (1.03, 1.03, 1.03)  — margen anti z-fight
+//    • antorcha       → scale (0.22, 0.62, 0.22)  — encaja el palo 0.2×0.6×0.2
+//  Usar scale en lugar de re-crear EdgesGeometry cada frame evita
+//  trabajo de CPU innecesario y no genera GC.
 const highlightMesh = new THREE.LineSegments(
-  new THREE.EdgesGeometry(new THREE.BoxGeometry(1.03, 1.03, 1.03)),
-  new THREE.LineBasicMaterial({ color: 0x000000 })
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
+  new THREE.LineBasicMaterial({ color: 0x000000, linewidth: 1 })
 );
 highlightMesh.visible = false;
 
@@ -63,7 +69,30 @@ export function updateRaycaster(camera, controls) {
     const hit        = hits[0];
     targetBlock      = hit.object.userData.blockPos;
     targetFaceNormal = hit.face.normal.clone();
-    highlightMesh.position.set(targetBlock.x, targetBlock.y, targetBlock.z);
+
+    // ── Sincronizar highlight con el mesh golpeado ──────────────
+    //  ANTES: usábamos blockPos (coordenadas enteras del bloque lógico)
+    //  para posicionar el cubo, lo que ignoraba la posición y rotación
+    //  real del mesh. Las antorchas en pared quedaban con el contorno
+    //  a 0.2−0.35 unidades de distancia del palo visible.
+    //
+    //  AHORA:
+    //  1. position.copy() — copia la posición EXACTA del mesh 3D,
+    //     incluyendo el offset de antorchas en pared (e.g. x ± 0.35).
+    //  2. quaternion.copy() — replica la rotación, por lo que el cubo
+    //     de selección se inclina junto con el palo de la antorcha.
+    //  3. scale.set() — ajusta el tamaño al de la geometría real:
+    //       • antorcha : 0.2 × 0.6 × 0.2  +  margen de 0.02 por eje
+    //       • sólido   : 1   × 1   × 1    +  margen de 0.03 (anti z-fight)
+    highlightMesh.position.copy(hit.object.position);
+    highlightMesh.quaternion.copy(hit.object.quaternion);
+
+    if (hit.object.userData.blockType === 'torch') {
+      highlightMesh.scale.set(0.22, 0.62, 0.22);
+    } else {
+      highlightMesh.scale.set(1.03, 1.03, 1.03);
+    }
+
     highlightMesh.visible = true;
   } else {
     targetBlock = targetFaceNormal = null;
