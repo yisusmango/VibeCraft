@@ -33,8 +33,13 @@ const texGrassTop = makeTexture(S, (ctx, w, h) => {
   noiseFill(ctx, 0, 0, w, h, ['#5d8a3c','#4a7a2b','#6a9a49','#52803a','#3d6a2b']);
 });
 const texGrassSide = makeTexture(S, (ctx, w, h) => {
+  // Tierra en toda la cara (base)
   noiseFill(ctx, 0, 0, w, h, ['#8B5E3C','#7a4d2b','#9a6e4c','#6a3d1c']);
-  noiseFill(ctx, 0, h - 4, w, 4, ['#5d8a3c','#4a7a2b','#6a9a49']);
+  // BUGFIX: Three.js mapea canvas-fila-0 (TOP del canvas) → TOP de la cara 3D.
+  // La franja verde debe pintarse en las primeras 4 filas del canvas
+  // para que aparezca en la parte SUPERIOR del bloque lateral, conectando
+  // visualmente con texGrassTop. Pintarla en h-4 la colocaba en la base.
+  noiseFill(ctx, 0, 0, w, 4, ['#5d8a3c','#4a7a2b','#6a9a49','#52803a']);
 });
 const texDirt = makeTexture(S, (ctx, w, h) => {
   noiseFill(ctx, 0, 0, w, h, ['#8B5E3C','#7a4d2b','#9a6e4c','#6a3d1c','#a07040']);
