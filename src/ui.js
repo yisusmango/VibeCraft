@@ -31,7 +31,7 @@ export const HOTBAR_BLOCKS = [
   'leaves',  // tecla 5
   'sand',    // tecla 6
   'glass',   // tecla 7
-  'wood',    // tecla 8  (repetición útil para construcción rápida)
+  'torch',   // tecla 8  ← NUEVO: antorcha con luz dinámica
   'stone',   // tecla 9
 ];
 
@@ -114,6 +114,31 @@ const ICON_PAINTERS = {
     // brillo especular
     ctx.fillStyle = 'rgba(255,255,255,1)';
     ctx.fillRect(2, 2, 4, 4);
+  },
+
+  // ── Antorcha (torch) ───────────────────────────────────────────
+  //  Icono estilo pixel-art: palo marrón centrado + llama cuadrada
+  //  encima con núcleo blanco para imitar auto-iluminación.
+  //  Coincide con la estética visual del bloque 3D en world.js.
+  torch(ctx, w, h) {
+    const cx = (w / 2) | 0;
+
+    // Palo: rectángulo marrón oscuro de 4px de ancho
+    ctx.fillStyle = '#6b3a1f';
+    ctx.fillRect(cx - 2, (h * 0.38) | 0, 4, (h * 0.56) | 0);
+    // Veta central del palo (ilusión de profundidad)
+    ctx.fillStyle = 'rgba(255,160,60,0.25)';
+    ctx.fillRect(cx,     (h * 0.38) | 0, 1, (h * 0.56) | 0);
+
+    // Llama exterior: cuadrado amarillo
+    ctx.fillStyle = '#ffcc00';
+    ctx.fillRect(cx - 4, (h * 0.08) | 0, 9, (h * 0.34) | 0);
+    // Llama media: naranja intenso (capa interior)
+    ctx.fillStyle = '#ff8800';
+    ctx.fillRect(cx - 2, (h * 0.12) | 0, 6, (h * 0.24) | 0);
+    // Núcleo blanco-amarillo (punto más caliente)
+    ctx.fillStyle = '#ffffaa';
+    ctx.fillRect(cx - 1, (h * 0.15) | 0, 3, (h * 0.12) | 0);
   },
 };
 
