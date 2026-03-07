@@ -20,6 +20,8 @@ import { initWorld, generateWorld, blockMap } from './world.js';
 import { initPlayer, updatePhysics, player } from './player.js';
 import { initInteraction, updateRaycaster, getTargetBlock } from './interaction.js';
 import { initUI, updateHUD }                from './ui.js';
+// ── [NUEVO] ── Importar el módulo de atmósfera ─────────────────
+import { Environment }                      from './environment.js';
 
 // ═══════════════════════════════════════════════════════════════
 //  🖥️  RENDERER
@@ -42,9 +44,6 @@ scene.fog        = new THREE.Fog(0x87CEEB, 40, 90);  // niebla para dar profundi
 
 // ═══════════════════════════════════════════════════════════════
 //  📷  CÁMARA EN PRIMERA PERSONA
-//  ─────────────────────────────────────────────────────────────
-//  FOV 75° — valor estándar de Minecraft.
-//  near 0.05 — evita z-fighting en bloques muy cercanos.
 // ═══════════════════════════════════════════════════════════════
 
 const camera = new THREE.PerspectiveCamera(
@@ -58,24 +57,21 @@ const camera = new THREE.PerspectiveCamera(
 //  💡  ILUMINACIÓN
 // ═══════════════════════════════════════════════════════════════
 
-// Luz ambiente: ilumina uniformemente toda la escena sin proyectar sombras.
-// Simula la luz difusa del cielo (rebote ambiental).
+// [SIN CAMBIOS] — Environment tomará el control de color e intensidad en tiempo real.
 const ambientLight = new THREE.AmbientLight(0xffffff, 0.55);
 scene.add(ambientLight);
 
-// Luz solar: direccional con sombras suaves PCF.
-// position define la dirección de los rayos (fuente en el "infinito").
 const sunLight = new THREE.DirectionalLight(0xfffbe0, 0.85);
 sunLight.position.set(30, 60, 20);
 sunLight.castShadow                = true;
-sunLight.shadow.mapSize.set(2048, 2048);  // mapa de sombras de alta res
+sunLight.shadow.mapSize.set(2048, 2048);
 sunLight.shadow.camera.near        = 0.5;
 sunLight.shadow.camera.far         = 200;
 sunLight.shadow.camera.left        = -50;
 sunLight.shadow.camera.right       =  50;
 sunLight.shadow.camera.top         =  50;
 sunLight.shadow.camera.bottom      = -50;
-sunLight.shadow.bias               = -0.001;  // elimina "shadow acne"
+sunLight.shadow.bias               = -0.001;
 scene.add(sunLight);
 
 // ═══════════════════════════════════════════════════════════════
@@ -83,27 +79,24 @@ scene.add(sunLight);
 // ═══════════════════════════════════════════════════════════════
 
 const controls = new PointerLockControls(camera, renderer.domElement);
-// getObject() devuelve el pivot padre de la cámara (yaw object).
-// Añadirlo a la escena hace que la cámara se renderice correctamente.
 scene.add(controls.getObject());
 
 // ═══════════════════════════════════════════════════════════════
 //  🔧  INICIALIZACIÓN DE MÓDULOS
-//  ─────────────────────────────────────────────────────────────
-//  El orden importa:
-//    1. initWorld   → inyecta la escena en world.js antes de crear bloques
-//    2. generateWorld → puebla el blockMap (necesita la escena inyectada)
-//    3. initPlayer  → registra teclado y coloca la cámara
-//    4. initInteraction → añade el highlight a la escena y registra el ratón
-//    5. initUI      → conecta el overlay con PointerLockControls
 // ═══════════════════════════════════════════════════════════════
 
-initWorld(scene);       // 1. world.js necesita la escena para scene.add(mesh)
-generateWorld();        // 2. crear el terreno plano de CONFIG.WORLD_SIZE × WORLD_SIZE
+initWorld(scene);
+generateWorld();
 
-initPlayer(controls);  // 3. teclado + posición inicial de la cámara
-initInteraction(scene, controls);  // 4. highlight + eventos de ratón
-initUI(controls);      // 5. overlay show/hide
+initPlayer(controls);
+initInteraction(scene, controls);
+initUI(controls);
+
+// ── [NUEVO] ── Crear el sistema de entorno, pasando escena y luces
+//  IMPORTANTE: llamar DESPUÉS de initWorld() para que scene.background
+//  y scene.fog ya estén configurados (Environment los sobreescribirá
+//  frame a frame, pero necesita que existan).
+const environment = new Environment(scene, ambientLight, sunLight);
 
 // ═══════════════════════════════════════════════════════════════
 //  📐  RESIZE
@@ -117,14 +110,6 @@ window.addEventListener('resize', () => {
 
 // ═══════════════════════════════════════════════════════════════
 //  ▶️  BUCLE DE ANIMACIÓN PRINCIPAL
-//  ─────────────────────────────────────────────────────────────
-//  Orden de operaciones por frame:
-//    1. Calcular dt (limitado a 50 ms para evitar tunneling en
-//       frames muy lentos o cuando la pestaña queda en segundo plano)
-//    2. Física del jugador (movimiento + colisiones + cámara)
-//    3. Raycasting (bloque apuntado + highlight)
-//    4. HUD (actualizar DOM)
-//    5. Render (WebGL)
 // ═══════════════════════════════════════════════════════════════
 
 const clock = new THREE.Clock();
@@ -132,15 +117,17 @@ const clock = new THREE.Clock();
 function animate() {
   requestAnimationFrame(animate);
 
-  // dt = tiempo desde el último frame en segundos
-  // Clamping a 50 ms (20 fps mínimo) evita "saltos" físicos grandes
   const dt = Math.min(clock.getDelta(), 0.05);
 
-  updatePhysics(dt, camera, controls);          // player.js
-  updateRaycaster(camera, controls);            // interaction.js
-  updateHUD(player, blockMap, getTargetBlock()); // ui.js
+  updatePhysics(dt, camera, controls);
+  updateRaycaster(camera, controls);
+  updateHUD(player, blockMap, getTargetBlock());
+
+  // ── [NUEVO] ── Actualizar ciclo día/noche, cuerpos celestes y nubes
+  //  Se pasa `camera` para que el pivote del sol/luna siga al jugador.
+  environment.update(dt, camera);
 
   renderer.render(scene, camera);
 }
 
-animate(); // 🚀  ¡Motor en marcha!
+animate();
