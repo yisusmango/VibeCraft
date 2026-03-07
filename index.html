@@ -18,10 +18,10 @@
 </head>
 <body>
 
-  <!-- Mira del jugador (crosshair) -->
+  <!-- Mira del jugador -->
   <div id="crosshair"></div>
 
-  <!-- HUD inferior: coordenadas y conteo de bloques -->
+  <!-- HUD: coordenadas y contador de bloques -->
   <div id="hud">
     X: <span id="hx">0.0</span>
     Y: <span id="hy">0.0</span>
@@ -35,7 +35,7 @@
     <div class="value" id="bi">—</div>
   </div>
 
-  <!-- Panel superior derecho: velocidad Y y estado de suelo -->
+  <!-- Panel superior derecho: velocidad Y y suelo -->
   <div id="state">
     VY: <span id="svy">0.00</span> &nbsp; Suelo: <span id="sg">—</span>
   </div>
@@ -50,10 +50,13 @@
       <div><span class="key">Click Izq.</span> &nbsp; Destruir</div>
       <div><span class="key">Click Der.</span> &nbsp; Colocar</div>
       <div><span class="key">Ratón</span> &nbsp; Girar vista</div>
-      <div><span class="key">ESC</span> &nbsp; Pausar</div>
+      <div><span class="key">1 – 9</span> &nbsp; Seleccionar bloque</div>
     </div>
-    <div class="note">Motor Voxel Base — Fase 1 &nbsp;·&nbsp; Three.js r158</div>
+    <div class="note">Motor Voxel Base — Fase 2 &nbsp;·&nbsp; Three.js r158</div>
   </div>
+
+  <!-- 🎒 HOTBAR — generado dinámicamente por ui.js (initHotbar) -->
+  <div id="hotbar"></div>
 
   <!-- Punto de entrada del juego -->
   <script type="module" src="./src/main.js"></script>
