@@ -192,6 +192,20 @@ export function initUI(controls) {
       setSlot(n - 1);
     }
   });
+
+  // ── Scroll del ratón: navega el Hotbar de forma circular ──────────
+  // deltaY > 0 → scroll abajo → slot siguiente (hacia la derecha)
+  // deltaY < 0 → scroll arriba → slot anterior (hacia la izquierda)
+  // El módulo ((n % len) + len) % len garantiza wrap circular en ambas
+  // direcciones sin producir índices negativos.
+  document.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const len  = HOTBAR_BLOCKS.length;
+    const dir  = e.deltaY > 0 ? 1 : -1;
+    const next = ((currentSlot + dir) % len + len) % len;
+    setSlot(next);
+  }, { passive: false }); // passive:false necesario para poder llamar preventDefault
+
 }
 
 // ═══════════════════════════════════════════════════════════════
