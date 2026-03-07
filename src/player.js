@@ -10,7 +10,7 @@
 
 import * as THREE from 'three';
 import { CONFIG, HALF_W } from './config.js';
-import { hasBlock } from './world.js';
+import { hasBlock, getBlockType } from './world.js';
 
 // ═══════════════════════════════════════════════════════════════
 //  🧍  ESTADO DEL JUGADOR
@@ -93,9 +93,29 @@ function initKeyboard() {
 //    Z: [ bz − 0.5,  bz + 0.5 ]
 // ═══════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════
+//  🧱  TIPOS NO SÓLIDOS — colisión física ignorada
+//  ─────────────────────────────────────────────────────────────
+//  Bloques cuya geometría es menor al cubo 1×1×1 estándar.
+//  checkBlockCollision los omite para que el jugador pueda
+//  caminar a través de ellos sin quedarse atascado.
+//
+//  Para añadir nuevos bloques no sólidos en el futuro (flores,
+//  setas, etc.) basta con añadir su clave aquí.
+// ═══════════════════════════════════════════════════════════════
+const NON_SOLID_TYPES = new Set(['torch']);
+
 /**
  * Comprueba si la posición hipotética `pos` colisiona con algún bloque
- * del mundo usando el AABB del jugador.
+ * SÓLIDO del mundo usando el AABB del jugador.
+ *
+ * CAMBIO RESPECTO A LA VERSIÓN ANTERIOR:
+ *   Antes: hasBlock() → cualquier bloque bloqueaba
+ *   Ahora: hasBlock() + getBlockType() → NON_SOLID_TYPES se ignoran
+ *
+ * El coste extra es O(1) por bloque candidato (lookup en Set y en Map),
+ * por lo que el impacto en el framerate es despreciable.
+ *
  * @param {THREE.Vector3} pos — Posición candidata de los pies
  * @returns {boolean}
  */
@@ -104,7 +124,6 @@ export function checkBlockCollision(pos) {
   const pMinY = pos.y,            pMaxY = pos.y + CONFIG.PLAYER_HEIGHT;
   const pMinZ = pos.z - HALF_W,  pMaxZ = pos.z + HALF_W;
 
-  // Rango conservador de bloques que podrían solapar (solo se itera el vecindario local)
   const x0 = Math.floor(pMinX), x1 = Math.ceil(pMaxX);
   const y0 = Math.floor(pMinY), y1 = Math.ceil(pMaxY);
   const z0 = Math.floor(pMinZ), z1 = Math.ceil(pMaxZ);
@@ -113,6 +132,11 @@ export function checkBlockCollision(pos) {
     for (let by = y0; by <= y1; by++) {
       for (let bz = z0; bz <= z1; bz++) {
         if (!hasBlock(bx, by, bz)) continue;
+
+        // ── Saltar bloques no sólidos (antorchas, etc.) ──────────
+        //   getBlockType() devuelve null si no hay bloque → hasBlock
+        //   ya lo filtró arriba, así que aquí siempre retorna string.
+        if (NON_SOLID_TYPES.has(getBlockType(bx, by, bz))) continue;
 
         // Test SAT: los tres ejes deben solapar simultáneamente
         if (
