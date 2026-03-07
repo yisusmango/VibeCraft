@@ -139,6 +139,24 @@ export function checkBlockCollision(pos) {
 //  pegado en aristas o esquinas entre dos bloques adyacentes.
 // ═══════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════
+//  🎮  HEAD BOBBING
+//  ─────────────────────────────────────────────────────────────
+//  Parámetros de ajuste rápido:
+//    BOB_SPEED     → frecuencia del ciclo de paso (ciclos/seg).
+//                    Valor real Minecraft ~1.8 pasos/seg ≈ BOB_SPEED ≈ 11
+//    BOB_AMPLITUDE → desplazamiento máximo en Y (bloques).
+//                    Valores pequeños (0.04–0.08) se sienten naturales.
+//    BOB_LERP      → velocidad de suavizado al detenerse (0-1 por seg).
+//                    Más alto = vuelta más brusca a la altura base.
+// ═══════════════════════════════════════════════════════════════
+const BOB_SPEED     = 11.0;   // ciclos/seg mientras se camina
+const BOB_AMPLITUDE = 0.055;  // desplazamiento máximo en Y (bloques)
+const BOB_LERP      = 12.0;   // velocidad de interpolación al parar
+
+let _bobAccum  = 0;  // acumulador de fase (radianes), avanza solo al caminar
+let _bobOffset = 0;  // offset Y actual aplicado a la cámara (suavizado)
+
 // Vectores temporales reutilizables — evita crear new Vector3 cada frame
 const _fwd   = new THREE.Vector3();
 const _right = new THREE.Vector3();
@@ -215,10 +233,41 @@ export function updatePhysics(dt, camera, controls) {
     player.velocity.set(0, 0, 0);
   }
 
-  // 5. ── SINCRONIZAR CÁMARA: ojos = pies + EYE_HEIGHT
+  // 5. ── SINCRONIZAR CÁMARA CON HEAD BOBBING ──────────────────
+  //
+  //  ALGORITMO:
+  //  a) El jugador "está caminando" si tiene velocidad horizontal
+  //     real (post-colisión) Y está apoyado en el suelo.
+  //     Usamos el módulo de velocidad XZ en lugar de las teclas
+  //     para que el bob se detenga instantáneamente al chocar con
+  //     una pared aunque la tecla siga pulsada.
+  //
+  //  b) Si camina: avanzar _bobAccum (acumulador de fase) a
+  //     BOB_SPEED * dt radianes. El desplazamiento es:
+  //       offset = sin(_bobAccum) * BOB_AMPLITUDE
+  //     sin() produce un ciclo completo cada 2π segundos a vel. 1.
+  //
+  //  c) Si no camina: interpolar _bobOffset hacia 0 con lerp
+  //     exponencial para que la cabeza regrese suavemente a la
+  //     altura base y no se quede a mitad de un paso.
+  //     Fórmula:  x += (target - x) * min(1, factor * dt)
+  //     El min(1,…) evita overshooting si dt es muy grande.
+
+  const horizSpeed  = Math.hypot(player.velocity.x, player.velocity.z);
+  const isWalking   = horizSpeed > 0.1 && player.isOnGround;
+
+  if (isWalking) {
+    _bobAccum   += BOB_SPEED * dt;
+    _bobOffset   = Math.sin(_bobAccum) * BOB_AMPLITUDE;
+  } else {
+    // Lerp suave hacia 0: cuando el jugador se detiene la cabeza
+    // no para en seco sino que completa el ciclo gradualmente.
+    _bobOffset += (0 - _bobOffset) * Math.min(1, BOB_LERP * dt);
+  }
+
   controls.getObject().position.set(
     player.position.x,
-    player.position.y + CONFIG.EYE_HEIGHT,
+    player.position.y + CONFIG.EYE_HEIGHT + _bobOffset,
     player.position.z
   );
 }
