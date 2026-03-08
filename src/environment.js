@@ -394,6 +394,15 @@ export class Environment {
       // Con VOXEL_SIZE=16, cada nube escalaría a 16×8×16 → sería descartada
       // erróneamente. Desactivarlo es seguro: la GPU maneja los ≤96 k tri sin problema.
       cloudMesh.frustumCulled = false;
+      // Segunda línea de defensa: Three.js puede recalcular el bounding sphere
+      // al mover mesh.position cada frame en update(), lo que reintroduce el
+      // test de frustum con el sphere pequeño de la geometría base (radio ≈ 0.87).
+      // Asignar un sphere infinito garantiza que el test SIEMPRE pase, sin coste
+      // de CPU ya que Three.js no intenta recomputarlo cuando está pre-asignado.
+      cloudMesh.geometry.boundingSphere = new THREE.Sphere(
+        new THREE.Vector3(0, 0, 0),
+        Infinity
+      );
 
       // ── Tercer paso: calcular matrices (solo una vez, nunca más) ─
       //  Las posiciones X/Z están en coordenadas locales del mesh.
