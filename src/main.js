@@ -93,6 +93,32 @@ const controls = new PointerLockControls(camera, renderer.domElement);
 scene.add(controls.getObject());
 
 // ═══════════════════════════════════════════════════════════════
+//  🎮  ESTADO DE JUEGO — MENÚ vs JUGANDO
+//  ─────────────────────────────────────────────────────────────
+//  isMenuVisible = true   → menú principal activo
+//    • Física pausada          • Solo el panorama gira la cámara
+//    • Raycaster inactivo      • Environment se actualiza (día/noche)
+//  isMenuVisible = false  → jugador en control
+//    • Todo el pipeline normal
+// ═══════════════════════════════════════════════════════════════
+let isMenuVisible = true;
+
+// ── Configuración del panorama de fondo ──────────────────────────
+//  La cámara orbita alrededor del centro del mundo (WORLD_SIZE/2)
+//  a baja velocidad, replicando el panorama clásico de Minecraft.
+//
+//  PANO_SPEED: 0.025 rad/s → vuelta completa en ≈251 seg (≈4 min)
+//  PANO_RADIUS: 14 bloques → suficiente para ver el terreno sin
+//               salir de los 32×32 del mundo generado.
+//  PANO_HEIGHT: 4 unidades → cámara por encima del suelo (Y=0.5)
+//               apuntando ligeramente hacia abajo para ver el terreno.
+const PANO_CENTER = new THREE.Vector3(16, 4, 16);
+const PANO_RADIUS = 14;
+const PANO_SPEED  = 0.025;  // radianes/seg
+const PANO_PITCH  = -0.10;  // inclinación de cámara (negativo = mirar abajo)
+let   panoramaAngle = 0;
+
+// ═══════════════════════════════════════════════════════════════
 //  🔧  INICIALIZACIÓN DE MÓDULOS
 // ═══════════════════════════════════════════════════════════════
 
@@ -102,6 +128,29 @@ generateWorld();
 initPlayer(controls);
 initInteraction(scene, controls);
 initUI(controls);
+
+// ═══════════════════════════════════════════════════════════════
+//  🏠  BOTÓN SINGLEPLAYER — transición Menú → Juego
+//  ─────────────────────────────────────────────────────────────
+//  Flujo al hacer clic:
+//    1. isMenuVisible = false → el animate() activa la física
+//    2. body.menu-active se elimina → CSS muestra el HUD
+//    3. controls.lock() → PointerLock activo, jugador en control
+//
+//  controls.lock() requiere un gesto de usuario (clic de ratón).
+//  Como el listener es mousedown/click en un botón, el navegador
+//  lo acepta como gesto válido.
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('btn-singleplayer').addEventListener('click', () => {
+  isMenuVisible = false;
+  document.body.classList.remove('menu-active');
+
+  // Reset limpio de rotación antes de entregar el control al jugador.
+  controls.getObject().rotation.set(0, 0, 0);
+  camera.rotation.set(0, 0, 0);
+
+  controls.lock();
+});
 
 // ── [NUEVO] ── Crear el sistema de entorno, pasando escena y luces
 //  IMPORTANTE: llamar DESPUÉS de initWorld() para que scene.background
@@ -191,12 +240,38 @@ function animate() {
 
   const dt = Math.min(clock.getDelta(), 0.05);
 
-  updatePhysics(dt, camera, controls);
-  updateRaycaster(camera, controls);
-  updateHUD(player, blockMap, getTargetBlock());
+  if (isMenuVisible) {
+    // ── MODO MENÚ: panorama cinematográfico ──────────────────────
+    //
+    //  La cámara orbita alrededor de PANO_CENTER sin activar la física.
+    //  Manipulamos el "yaw object" de PointerLockControls directamente
+    //  (controls no están bloqueados, por lo que no interfieren):
+    //
+    //    controls.getObject()   → yaw   (rotación Y = izquierda/derecha)
+    //    camera                 → pitch (rotación X = arriba/abajo)
+    //
+    //  Math.atan2(dx, dz) devuelve el ángulo que apunta hacia el centro
+    //  en la convención de Three.js (Y-up, eje Z hacia la cámara).
+    panoramaAngle += PANO_SPEED * dt;
 
-  // ── [NUEVO] ── Actualizar ciclo día/noche, cuerpos celestes y nubes
-  //  Se pasa `camera` para que el pivote del sol/luna siga al jugador.
+    const px = PANO_CENTER.x + Math.cos(panoramaAngle) * PANO_RADIUS;
+    const pz = PANO_CENTER.z + Math.sin(panoramaAngle) * PANO_RADIUS;
+
+    const yawObj = controls.getObject();
+    yawObj.position.set(px, PANO_CENTER.y, pz);
+    yawObj.rotation.y = Math.atan2(PANO_CENTER.x - px, PANO_CENTER.z - pz);
+    yawObj.rotation.z = 0;   // ← forzar: sin roll en el yaw object
+    camera.rotation.x = PANO_PITCH;
+    camera.rotation.z = 0;   // ← forzar: sin roll en la cámara hija
+
+  } else {
+    // ── MODO JUEGO: pipeline completo ───────────────────────────
+    updatePhysics(dt, camera, controls);
+    updateRaycaster(camera, controls);
+    updateHUD(player, blockMap, getTargetBlock());
+  }
+
+  // Environment se actualiza siempre (día/noche visible en el menú también)
   environment.update(dt, camera);
 
   renderer.render(scene, camera);
