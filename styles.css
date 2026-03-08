@@ -248,3 +248,217 @@
    .hotbar-slot.selected .slot-number {
      color: rgba(255,255,230,0.85);
    }
+
+/* ══════════════════════════════════════════════════════════════════
+   🎮  VISIBILIDAD POR ESTADO
+   ──────────────────────────────────────────────────────────────────
+   body.menu-active → mostramos #main-menu, ocultamos todo el HUD.
+   Sin la clase      → ocultamos el menú, mostramos el HUD.
+
+   Usamos !important solo en la regla de ocultado de HUD para que no
+   haya conflictos con las declaraciones inline que pueda poner JS.
+   ══════════════════════════════════════════════════════════════════ */
+
+/* Menú principal: oculto por defecto, visible si body.menu-active */
+#main-menu                    { display: none; }
+body.menu-active  #main-menu  { display: flex; }
+
+/* HUD: visible por defecto, oculto si body.menu-active */
+body.menu-active #crosshair,
+body.menu-active #hud,
+body.menu-active #block-info,
+body.menu-active #dev-tools,
+body.menu-active #state,
+body.menu-active #hotbar { display: none !important; }
+
+/* Overlay de PAUSA: oculto por defecto.
+   Se muestra vía JS (ui.js → controls 'unlock' event).
+   CAMBIO: quitamos display:flex del selector original
+   y lo manejamos sólo desde JS. */
+#overlay { display: none; }
+
+
+/* ══════════════════════════════════════════════════════════════════
+   🏠  MENÚ PRINCIPAL — #main-menu
+   ══════════════════════════════════════════════════════════════════ */
+#main-menu {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+
+  /* Fondo: world 3D visible detrás + velo oscuro para legibilidad */
+  background:
+    linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0.18) 0%,
+      rgba(0, 0, 0, 0.55) 100%
+    );
+
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+
+  /* Cursor normal en el menú */
+  cursor: default;
+  user-select: none;
+}
+
+/* ── Título ─────────────────────────────────────────────────────── */
+/*
+   Técnica de borde negro:
+   8 text-shadows desplazados en diagonal/horizontal/vertical
+   forman un contorno limpio de 3 px.
+   El color base es amarillo dorado + sombra naranja-marrón
+   para imitar el degradado del logo de Minecraft.
+*/
+.mc-title {
+  font-family: 'Press Start 2P', 'Courier New', monospace;
+  font-size: clamp(2.2rem, 6vw, 5rem);
+  text-transform: uppercase;
+  letter-spacing: 0.10em;
+  color: #ffd700;
+
+  text-shadow:
+    /* Borde negro (8 direcciones) */
+    -3px -3px 0 #000,  3px -3px 0 #000,
+    -3px  3px 0 #000,  3px  3px 0 #000,
+     0   -3px 0 #000,  0    3px 0 #000,
+    -3px  0   0 #000,  3px  0   0 #000,
+    /* Sombra de profundidad naranja (icónico del logo) */
+     5px  5px 0 #c07000,
+     9px  9px 0 rgba(0, 0, 0, 0.50);
+
+  /* Resplandor suave amarillo alrededor del título */
+  filter: drop-shadow(0 0 28px rgba(255, 200, 0, 0.45));
+
+  margin-bottom: 12px;
+  margin-top: -24px;   /* compensa el splash text encima */
+}
+
+/* ── Splash text (texto decorativo giratorio) ───────────────────── */
+.mc-splash {
+  font-family: 'Press Start 2P', 'Courier New', monospace;
+  font-size: clamp(0.45rem, 1.2vw, 0.65rem);
+  color: #ffff55;
+  text-shadow: 1px 1px 0 #8b8b00, 2px 2px 0 rgba(0,0,0,0.6);
+  transform: rotate(-12deg) translateX(40%);
+  margin-bottom: -8px;
+  align-self: center;
+  animation: splashBob 1.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes splashBob {
+  0%, 100% { transform: rotate(-12deg) translateX(40%) scale(1.00); }
+  50%       { transform: rotate(-12deg) translateX(40%) scale(1.07); }
+}
+
+/* ── Columna de botones ─────────────────────────────────────────── */
+.mc-btn-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 40px;
+  margin-bottom: 28px;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   🪨  BOTÓN ESTILO MINECRAFT — .mc-btn
+   ──────────────────────────────────────────────────────────────────
+   Anatomía visual:
+     • Fondo: gris piedra con sutil patrón de ruido mediante gradiente
+     • Borde: bevel 3D — aristas superiores/izquierdas más claras
+               aristas inferiores/derechas más oscuras
+     • Texto: blanco, fuente pixelada, sombra oscura (offset 2px)
+     • Hover : fondo azul-grisáceo + aristas más brillantes (Minecraft original)
+     • Active: bevel invertido (efecto de pulsación)
+     • Disabled: semitransparente + cursor prohibido
+   ══════════════════════════════════════════════════════════════════ */
+.mc-btn {
+  font-family: 'Press Start 2P', 'Courier New', monospace;
+  font-size: clamp(0.52rem, 1.3vw, 0.72rem);
+  color: #fff;
+  text-shadow: 2px 2px 0 #3f3f3f;
+  text-align: center;
+  line-height: 1.3;
+  letter-spacing: 0.04em;
+
+  width: clamp(240px, 38vw, 380px);
+  padding: 13px 20px;
+
+  cursor: pointer;
+  background-color: #8b8b8b;
+
+  /* Textura tipo piedra: capas de gradiente cruzadas en cuadrícula de 4 px */
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      rgba(0,0,0,0.04) 0px, rgba(0,0,0,0.04) 1px,
+      transparent 1px, transparent 4px
+    ),
+    repeating-linear-gradient(
+      0deg,
+      rgba(0,0,0,0.04) 0px, rgba(0,0,0,0.04) 1px,
+      transparent 1px, transparent 4px
+    );
+
+  /* Bevel clásico: aristas superiores/izquierdas claras, inferiores/derechas oscuras */
+  border-style: solid;
+  border-width: 3px;
+  border-top-color:    #c8c8c8;
+  border-left-color:   #c8c8c8;
+  border-right-color:  #3a3a3a;
+  border-bottom-color: #3a3a3a;
+
+  /* Borde exterior negro de 1 px (contorno duro) */
+  outline: 2px solid #000;
+
+  transition: background-color 60ms, border-color 60ms, color 60ms;
+  image-rendering: pixelated;
+}
+
+/* Hover: fondo azul-gris + aristas más brillantes (igual al original) */
+.mc-btn:hover:not(:disabled) {
+  background-color: #9898c8;      /* azul-grisáceo característico de Minecraft */
+  border-top-color:    #d4d4f0;
+  border-left-color:   #d4d4f0;
+  border-right-color:  #4a4a7a;
+  border-bottom-color: #4a4a7a;
+  color: #ffffa0;                  /* texto amarillo-claro en hover */
+  text-shadow: 2px 2px 0 #5a5a00;
+}
+
+/* Active (clic): bevel invertido → parece que se hunde */
+.mc-btn:active:not(:disabled) {
+  border-top-color:    #3a3a3a;
+  border-left-color:   #3a3a3a;
+  border-right-color:  #c8c8c8;
+  border-bottom-color: #c8c8c8;
+  transform: translateY(1px);
+}
+
+/* Disabled: opaco + cursor prohibido + tinte oscuro */
+.mc-btn--disabled,
+.mc-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  filter: brightness(0.80);
+}
+
+/* Badge "(Soon…)" dentro del botón de multiplayer */
+.mc-soon {
+  font-size: 0.75em;
+  color: #ffcc55;
+  opacity: 0.85;
+}
+
+/* ── Versión ─────────────────────────────────────────────────────── */
+.mc-version {
+  font-family: 'Press Start 2P', 'Courier New', monospace;
+  font-size: clamp(0.38rem, 0.9vw, 0.52rem);
+  color: rgba(255, 255, 255, 0.40);
+  text-shadow: 1px 1px 0 #000;
+  letter-spacing: 0.05em;
+}

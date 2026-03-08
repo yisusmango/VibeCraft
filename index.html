@@ -3,10 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>VibeCraft — Motor Base Fase 1</title>
+  <title>VibeCraft</title>
   <link rel="stylesheet" href="./styles.css">
 
-  <!-- ── Three.js import map (ES Modules, sin bundler) ── -->
+  <!-- Pixel font — Press Start 2P (Google Fonts, offline fallback: Courier New) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+
+  <!-- Three.js import map (ES Modules, sin bundler) -->
   <script type="importmap">
   {
     "imports": {
@@ -16,12 +21,46 @@
   }
   </script>
 </head>
-<body>
+
+<!--
+  body.menu-active   → visible: #main-menu   oculto: todos los elementos HUD
+  body (sin clase)   → visible: todo el HUD  oculto: #main-menu
+-->
+<body class="menu-active">
+
+  <!-- ══════════════════════════════════════════════════════════
+       🏠  MENÚ PRINCIPAL
+       Se oculta al entrar al juego (JS elimina .menu-active del body).
+       Estructura: título + columna de botones + versión
+       ══════════════════════════════════════════════════════════ -->
+  <div id="main-menu">
+
+    <!-- Splash text rotatorio (puramente decorativo) -->
+    <div class="mc-splash">¡Ahora con nubes volumétricas!</div>
+
+    <h1 class="mc-title">VibeCraft</h1>
+
+    <nav class="mc-btn-col">
+      <button id="btn-singleplayer" class="mc-btn">Singleplayer</button>
+      <button id="btn-multiplayer"  class="mc-btn mc-btn--disabled" disabled>
+        Multiplayer <span class="mc-soon">(Soon…)</span>
+      </button>
+      <button id="btn-settings"     class="mc-btn mc-btn--disabled" disabled>
+        Settings
+      </button>
+    </nav>
+
+    <p class="mc-version">VibeCraft Alpha · Three.js r158</p>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════
+       HUD DE JUEGO — oculto durante el menú (body.menu-active)
+       ══════════════════════════════════════════════════════════ -->
 
   <!-- Mira del jugador -->
   <div id="crosshair"></div>
 
-  <!-- HUD: coordenadas y contador de bloques -->
+  <!-- Coordenadas y contador de bloques -->
   <div id="hud">
     X: <span id="hx">0.0</span>
     Y: <span id="hy">0.0</span>
@@ -29,7 +68,7 @@
     &nbsp;|&nbsp; Bloques: <span id="hb">0</span>
   </div>
 
-  <!-- Panel superior izquierdo: bloque apuntado -->
+  <!-- Bloque apuntado -->
   <div id="block-info">
     <div class="label">Bloque apuntado</div>
     <div class="value" id="bi">—</div>
@@ -46,15 +85,15 @@
     </div>
   </div>
 
-  <!-- Panel superior derecho: velocidad Y y suelo -->
+  <!-- Velocidad Y / suelo -->
   <div id="state">
     VY: <span id="svy">0.00</span> &nbsp; Suelo: <span id="sg">—</span>
   </div>
 
-  <!-- Overlay de inicio / pausa -->
+  <!-- Overlay de PAUSA (aparece al pulsar ESC durante el juego) -->
   <div id="overlay">
     <h1>VibeCraft</h1>
-    <div class="subtitle">▶ Clic para jugar ◀</div>
+    <div class="subtitle">▶ Clic para continuar ◀</div>
     <div class="grid">
       <div><span class="key">W A S D</span> &nbsp; Mover</div>
       <div><span class="key">Espacio</span> &nbsp; Saltar</div>
@@ -63,10 +102,10 @@
       <div><span class="key">Ratón</span> &nbsp; Girar vista</div>
       <div><span class="key">1 – 9</span> &nbsp; Seleccionar bloque</div>
     </div>
-    <div class="note">Motor Voxel Base — Fase 2 &nbsp;·&nbsp; Three.js r158</div>
+    <div class="note">ESC para pausar</div>
   </div>
 
-  <!-- 🎒 HOTBAR — generado dinámicamente por ui.js (initHotbar) -->
+  <!-- Hotbar (generado por ui.js) -->
   <div id="hotbar"></div>
 
   <!-- Punto de entrada del juego -->
