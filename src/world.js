@@ -331,6 +331,12 @@ export function addBlock(x, y, z, type = 'grass', normal = null) {
 
   mesh.userData.blockPos  = { x, y, z };
   mesh.userData.blockType = type;
+  // ── Bug fix: guardar la normal original ──────────────────────────
+  //  Sin esto, al serializar una antorcha de pared perdemos en qué cara
+  //  fue colocada y addBlock la regenera como antorcha de suelo (vertical)
+  //  → palo flotante sin base. Guardamos un POJO plano (no THREE.Vector3)
+  //  para evitar referencias circulares al hacer JSON.stringify en la exportación.
+  mesh.userData.normal    = normal ? { x: normal.x, y: normal.y, z: normal.z } : null;
   _scene.add(mesh);
   blockMap.set(key, mesh);
   cacheDirty = true;
@@ -401,8 +407,16 @@ export const generateWorld = generateDefaultWorld;
 export function serializeWorld() {
   const result = [];
   for (const [key, mesh] of blockMap) {
-    // key ya tiene el formato "x,y,z", solo añadimos ":tipo"
-    result.push(`${key}:${mesh.userData.blockType}`);
+    const type = mesh.userData.blockType;
+    const n    = mesh.userData.normal;
+    // Formato con normal (antorchas en pared): "x,y,z:tipo:nx,ny,nz"
+    //   ej. "5,1,3:torch:1,0,0"
+    // Formato sin normal (bloques sólidos, antorcha de suelo): "x,y,z:tipo"
+    //   ej. "0,0,0:grass"
+    // Los componentes de la normal son siempre enteros (-1, 0 o 1)
+    // → sin decimales, cadena compacta.
+    const suffix = n ? `:${n.x},${n.y},${n.z}` : '';
+    result.push(`${key}:${type}${suffix}`);
   }
   return result;
 }
@@ -427,15 +441,38 @@ export function deserializeWorld(blocksArray) {
 
   // ── Paso 2: reconstruir desde el array serializado ───────────────
   for (const entry of blocksArray) {
-    // Formato: "x,y,z:tipo"  →  split en ':' da  ["x,y,z", "tipo"]
-    const colonIdx = entry.lastIndexOf(':');
-    if (colonIdx === -1) continue;               // entrada malformada → ignorar
-    const coords = entry.slice(0, colonIdx).split(',');
-    const type   = entry.slice(colonIdx + 1);
+    // Formatos aceptados (retrocompatibles):
+    //   2 partes: "x,y,z:tipo"           → sin normal (suelo / sólidos)
+    //   3 partes: "x,y,z:tipo:nx,ny,nz"  → con normal (antorcha en pared)
+    //
+    // IMPORTANTE: NO usar lastIndexOf(':') aquí porque el tercer segmento
+    // "nx,ny,nz" también contiene comas pero no dos puntos — split(':')
+    // da exactamente 2 o 3 elementos sin ambigüedad.
+    const parts = entry.split(':');
+    if (parts.length < 2) continue;          // entrada malformada → ignorar
+
+    const coords = parts[0].split(',');
+    const type   = parts[1];
     const x = Number(coords[0]);
     const y = Number(coords[1]);
     const z = Number(coords[2]);
-    if (isNaN(x) || isNaN(y) || isNaN(z)) continue;
-    addBlock(x, y, z, type);
+    if (isNaN(x) || isNaN(y) || isNaN(z) || !type) continue;
+
+    // Reconstruir la normal como THREE.Vector3 si está presente
+    let normal = null;
+    if (parts[2]) {
+      const nc = parts[2].split(',');
+      if (nc.length === 3) {
+        const nx = Number(nc[0]), ny = Number(nc[1]), nz = Number(nc[2]);
+        if (!isNaN(nx) && !isNaN(ny) && !isNaN(nz)) {
+          // addBlock espera un objeto con .x/.y/.z (no necesita ser Vector3
+          // para la lógica interna, pero usamos Vector3 por consistencia
+          // con el código de interaction.js que también lo pasa como Vector3).
+          normal = new THREE.Vector3(nx, ny, nz);
+        }
+      }
+    }
+
+    addBlock(x, y, z, type, normal);
   }
 }
