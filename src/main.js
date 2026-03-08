@@ -141,15 +141,87 @@ initUI(controls);
 //  Como el listener es mousedown/click en un botón, el navegador
 //  lo acepta como gesto válido.
 // ═══════════════════════════════════════════════════════════════
-document.getElementById('btn-singleplayer').addEventListener('click', () => {
+// ═══════════════════════════════════════════════════════════════
+//  🌍  GESTOR DE MUNDOS — referencias DOM
+// ═══════════════════════════════════════════════════════════════
+const elBtnCol     = document.querySelector('.mc-btn-col');
+const elWorldMgr   = document.getElementById('world-manager');
+const elWorldsList = document.getElementById('worlds-list');
+
+// ── Función de lanzamiento de partida ───────────────────────────
+//  Encapsula la lógica que antes estaba inline en btn-singleplayer.
+//  Se llama desde el botón "Jugar" de cada .world-item, pasando el
+//  nombre del mundo (para futura integración con IndexedDB).
+function launchWorld(worldName) {
+  console.info(`[VibeCraft] Cargando mundo: "${worldName}"`);
   isMenuVisible = false;
   document.body.classList.remove('menu-active');
-
-  // Reset limpio de rotación antes de entregar el control al jugador.
   controls.getObject().rotation.set(0, 0, 0);
   camera.rotation.set(0, 0, 0);
-
   controls.lock();
+}
+
+// ── Mock data — inyecta mundos de prueba en #worlds-list ─────────
+//  TODO (Fase siguiente): sustituir por lectura real desde IndexedDB.
+//  Cada entrada usa la clase .world-item con info a la izquierda y
+//  botones de acción a la derecha.
+function renderMockWorlds() {
+  const mockWorlds = [
+    { name: 'Mi Rancho',         date: '08/03/2026', size: '128 KB' },
+    { name: 'Mundo de Pruebas',  date: '07/03/2026', size: '64 KB'  },
+  ];
+
+  elWorldsList.innerHTML = mockWorlds.map(w => `
+    <div class="world-item">
+      <div class="world-item__info">
+        <span class="world-item__name">${w.name}</span>
+        <span class="world-item__meta">${w.date} &nbsp;·&nbsp; ${w.size}</span>
+      </div>
+      <div class="world-item__actions">
+        <button class="mc-btn mc-btn--sm btn-play"   data-world="${w.name}">Jugar</button>
+        <button class="mc-btn mc-btn--sm mc-btn--disabled" disabled>Exportar</button>
+        <button class="mc-btn mc-btn--sm mc-btn--danger btn-delete" data-world="${w.name}">Borrar</button>
+      </div>
+    </div>
+  `).join('');
+
+  // Event delegation: un solo listener en la lista captura todos los clics
+  elWorldsList.addEventListener('click', (e) => {
+    const playBtn   = e.target.closest('.btn-play');
+    const deleteBtn = e.target.closest('.btn-delete');
+
+    if (playBtn)   launchWorld(playBtn.dataset.world);
+    if (deleteBtn) {
+      // TODO: confirmar + eliminar de IndexedDB
+      const item = deleteBtn.closest('.world-item');
+      item.style.opacity = '0.4';
+      item.style.pointerEvents = 'none';
+      console.info(`[VibeCraft] (Mock) Borrar mundo: "${deleteBtn.dataset.world}"`);
+    }
+  }, { once: false });
+}
+
+// ── btn-singleplayer: abre el gestor en lugar de entrar al juego ──
+//  FLUJO:
+//    1. Oculta .mc-btn-col (los tres botones del menú principal)
+//    2. Muestra #world-manager con la lista de mundos
+//    3. Rellena la lista con mock data (llamada idempotente)
+document.getElementById('btn-singleplayer').addEventListener('click', () => {
+  elBtnCol.style.display   = 'none';
+  elWorldMgr.style.display = 'flex';
+  renderMockWorlds();
+});
+
+// ── btn-world-back: vuelve al menú principal ──────────────────────
+document.getElementById('btn-world-back').addEventListener('click', () => {
+  elWorldMgr.style.display = 'none';
+  elBtnCol.style.display   = 'flex';
+});
+
+// ── btn-world-new: placeholder (Fase siguiente = generador de mundo) ─
+document.getElementById('btn-world-new').addEventListener('click', () => {
+  // TODO: abrir panel de creación de mundo con nombre + seed
+  console.info('[VibeCraft] Crear Nuevo Mundo — pendiente de implementar');
 });
 
 // ── [NUEVO] ── Crear el sistema de entorno, pasando escena y luces
