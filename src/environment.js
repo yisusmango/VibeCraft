@@ -287,70 +287,97 @@ export class Environment {
   }
 
   _buildClouds(scene) {
-    // ── Nubes 3D — InstancedMesh ──────────────────────────────────
+    // ── Nubes 3D — InstancedMesh con cuadrícula estricta ─────────
     //
-    //  DISEÑO:
-    //  • 1 sola draw call gracias a InstancedMesh (vs N draw calls con Mesh[])
-    //  • BoxGeometry(1,1,1) base; la escala por instancia da el tamaño real.
-    //    Cada nube tiene ancho ~8–18, alto ~1.5–3, prof ~6–14 unidades.
-    //  • Rotación Y aleatoria para evitar que todas queden paralelas al eje Z.
-    //  • MeshBasicMaterial: no responde a luces → color totalmente predecible.
-    //    .color = _curCloud  → el tinte lo maneja _interpolatePhase() igual
-    //    que antes, sin cambios en la interfaz pública.
+    //  PROBLEMA ANTERIOR: posiciones aleatorias + rotación Y aleatoria
+    //  causaban solapamientos visuales frecuentes.
     //
-    //  WRAP-AROUND (cielo infinito):
-    //  Cada frame avanzamos c.x += windSpeed * dt.
-    //  Si una nube supera ±CLOUD_SPREAD respecto a la cámara (en X o Z),
-    //  la teletransportamos al lado opuesto desplazando exactamente
-    //  CLOUD_SPREAD*2 unidades para mantener la densidad uniforme.
+    //  SOLUCIÓN — Sistema de cuadrícula (grid):
     //
-    //  RENDIMIENTO:
-    //  48 instancias × BoxGeometry (12 tri) = 576 triángulos totales.
-    //  Actualizar 48 matrices/frame es O(48) operaciones triviales.
-    //  Impacto en FPS: ~0.
+    //  El área 200×200 se divide en celdas de CELL_SIZE×CELL_SIZE.
+    //  Con CELL_SIZE=20 obtenemos una cuadrícula de 10×10 = 100 celdas.
+    //  Cada celda puede generar UNA SOLA nube con probabilidad SPAWN_PROB,
+    //  centrada exactamente en el centro de la celda.
+    //
+    //  Garantía de no-solapamiento:
+    //    MAX_SX = MAX_SZ = 16  <  CELL_SIZE = 20
+    //  La nube más grande siempre tiene 2 unidades de margen libre
+    //  en cada eje respecto al borde de su celda → nunca invade
+    //  la celda vecina.
+    //
+    //  Rotación Y = 0 para todas: los bloques quedan alineados con
+    //  los ejes del mundo, coherente con la estética vóxel.
+    //
+    //  Wrap-around y rendimiento: igual que la versión anterior.
+    //  CLOUD_SPREAD = 100 (radio del área = 200/2).
+    //  Máximo 100 instancias × 12 tri = 1200 tri en 1 draw call.
 
-    const CLOUD_COUNT  = 48;
-    const CLOUD_SPREAD = 110;    // radio del área cubierta (110 × 2 = 220 m)
-    const CLOUD_Y      = 42;     // misma altura que las antiguas nubes 2D
+    const CELL_SIZE  = 20;
+    const GRID_COLS  = 10;          // 200 / CELL_SIZE
+    const GRID_ROWS  = 10;
+    const SPAWN_PROB = 0.30;        // probabilidad de nube por celda
+    const CLOUD_Y    = 42;
+    const MAX_SX     = 16;          // siempre < CELL_SIZE → sin solapamiento
+    const MAX_SZ     = 16;
 
+    // ── Primer paso: construir el listado de nubes ────────────────
+    //  No podemos saber el recuento exacto antes de tirar los dados,
+    //  así que recogemos primero, construimos el InstancedMesh después.
+    const clouds = [];
+    for (let row = 0; row < GRID_ROWS; row++) {
+      for (let col = 0; col < GRID_COLS; col++) {
+        if (Math.random() > SPAWN_PROB) continue;
+
+        // Centro de la celda (origen del grid en -100,-100 para
+        // que el área cubierta sea simétrica respecto al mundo).
+        const cx = -100 + col * CELL_SIZE + CELL_SIZE * 0.5;
+        const cz = -100 + row * CELL_SIZE + CELL_SIZE * 0.5;
+
+        clouds.push({
+          x:  cx,
+          y:  CLOUD_Y,
+          z:  cz,
+          sx: 4 + Math.random() * (MAX_SX - 4),   // ancho  4–16 u
+          sy: 1.5 + Math.random() * 1.5,           // alto   1.5–3 u
+          sz: 4 + Math.random() * (MAX_SZ - 4),   // prof   4–16 u
+          // rotation.y = 0 implícito — sin rotación aleatoria
+        });
+      }
+    }
+
+    // ── Segundo paso: crear InstancedMesh con el recuento real ────
+    const count    = Math.max(1, clouds.length);  // mínimo 1 evita error WebGL
     const cloudGeo = new THREE.BoxGeometry(1, 1, 1);
     const cloudMat = new THREE.MeshBasicMaterial({
-      color:       0xffffff,    // blanco base; _interpolatePhase() lo tinta
+      color:       0xffffff,   // blanco base; _interpolatePhase() lo tinta
       transparent: true,
       opacity:     0.82,
-      fog:         false,       // siempre visibles, sin desvanecerse en la niebla
-      depthWrite:  false,       // sin z-fighting entre nubes superpuestas
+      fog:         false,      // siempre visibles, sin desvanecerse con la niebla
+      depthWrite:  false,      // sin z-fighting entre nubes adyacentes
       side:        THREE.FrontSide,
     });
 
-    this._cloudMesh = new THREE.InstancedMesh(cloudGeo, cloudMat, CLOUD_COUNT);
-    // frustumCulled = false: el bounding box del InstancedMesh es el de la
-    // geometría base (1×1×1), no el de las instancias escaladas, por lo que
-    // Three.js lo descartaría erróneamente. Desactivar culling es seguro
-    // porque con solo 576 triángulos no penaliza la GPU.
+    this._cloudMesh       = new THREE.InstancedMesh(cloudGeo, cloudMat, count);
+    this._cloudMesh.count = clouds.length;   // Three.js r158: count es settable
+    // frustumCulled = false: el bounding box del InstancedMesh coincide con
+    // la BoxGeometry base (1×1×1), ignorando la escala de las instancias.
+    // Three.js descartaría erróneamente nubes escaladas a 16×3×16.
     this._cloudMesh.frustumCulled = false;
     scene.add(this._cloudMesh);
 
-    // Datos de cada instancia (posición world + escala + rotación Y)
-    this._cloudData   = [];
-    this._cloudSpread = CLOUD_SPREAD;
-    this._cloudDummy  = new THREE.Object3D();   // reutilizado cada frame
+    this._cloudData   = clouds;
+    this._cloudSpread = (GRID_COLS * CELL_SIZE) / 2;  // = 100
+    this._cloudDummy  = new THREE.Object3D();
 
-    for (let i = 0; i < CLOUD_COUNT; i++) {
-      const x  = (Math.random() - 0.5) * CLOUD_SPREAD * 2;
-      const z  = (Math.random() - 0.5) * CLOUD_SPREAD * 2;
-      const sx = 8  + Math.random() * 10;   // ancho  8–18 u
-      const sy = 1.5 + Math.random() * 1.5; // alto   1.5–3 u
-      const sz = 6  + Math.random() * 8;    // prof   6–14 u
-      const ry = Math.random() * Math.PI;   // rotación Y 0–180°
-
-      this._cloudData.push({ x, y: CLOUD_Y, z, sx, sy, sz, ry });
-
-      this._cloudDummy.position.set(x, CLOUD_Y, z);
-      this._cloudDummy.scale.set(sx, sy, sz);
-      this._cloudDummy.rotation.y = ry;
-      this._cloudDummy.updateMatrix();
-      this._cloudMesh.setMatrixAt(i, this._cloudDummy.matrix);
+    // Inicializar matrices (rotation = 0 por defecto en Object3D)
+    const dummy = this._cloudDummy;
+    dummy.rotation.set(0, 0, 0);   // garantía explícita: sin rotación Y
+    for (let i = 0; i < clouds.length; i++) {
+      const c = clouds[i];
+      dummy.position.set(c.x, c.y, c.z);
+      dummy.scale.set(c.sx, c.sy, c.sz);
+      dummy.updateMatrix();
+      this._cloudMesh.setMatrixAt(i, dummy.matrix);
     }
     this._cloudMesh.instanceMatrix.needsUpdate = true;
   }
@@ -374,10 +401,11 @@ export class Environment {
     this._ambient.color.copy(this._curAmbient);
     this._sun.color.copy(this._curSun);
 
-    // 4. Rotar pivote: 1 vuelta completa (2π) en DAY_DURATION seg
-    //    El eje de rotación es X, lo que hace que el sol suba/baje
-    //    por el eje vertical (Y) de la escena.
-    this._pivot.rotation.x = this._dayT * Math.PI * 2;
+    // 4. Rotar pivote usando el mapa asimétrico de ángulos.
+    //    _dayTToSunAngle() garantiza que el sol esté exactamente
+    //    en el horizonte al centro de dawn y dusk, y en el cénit
+    //    al centro de noon; la luna replica el mismo contrato.
+    this._pivot.rotation.x = this._dayTToSunAngle(this._dayT);
 
     // 5. Seguir la cámara en XZ para que el sol nunca "se aleje"
     const camPos = camera.parent
@@ -394,42 +422,94 @@ export class Environment {
 
     // 7. Mover nubes 3D con viento + wrap-around relativo a la cámara
     //
-    //    Velocidad equivalente a la antigua textura 2D:
-    //      Old: offset.x += 0.0048 UV/s × 55 m/UV = 0.264 m/s
-    //    Mantenemos 0.264 u/s para que el ritmo visual sea idéntico.
-    //
-    //    Wrap: si c.x - camX supera ±CLOUD_SPREAD, la nube se tele-
-    //    transporta CLOUD_SPREAD*2 unidades al lado opuesto.
-    //    El mismo check en Z garantiza que las nubes también sigan al
-    //    jugador cuando se mueve lateralmente.
+    //    WIND = 0.264 u/s — misma velocidad que la antigua textura 2D.
+    //    CLOUD_SPREAD = 100 (área de 200×200 / 2).
+    //    Wrap en X: avance del viento con teletransporte al lado opuesto.
+    //    Wrap en Z: seguimiento lateral del jugador sin viento.
+    //    rotation.y = 0 siempre → ya fijado en dummy antes del bucle.
     {
-      const WIND = 0.264;        // unidades/seg
-      const camX = camPos.x;
-      const camZ = camPos.z;
-      const wrap  = this._cloudSpread;
+      const WIND  = 0.264;
+      const camX  = camPos.x;
+      const camZ  = camPos.z;
+      const wrap  = this._cloudSpread;    // 100
+      const dummy = this._cloudDummy;
+
+      // La rotación del dummy es 0 desde la construcción y nunca cambia.
+      // Fijarla fuera del bucle evita asignarla N veces por frame.
+      dummy.rotation.set(0, 0, 0);
 
       for (let i = 0; i < this._cloudData.length; i++) {
         const c = this._cloudData[i];
 
-        // Avanzar posición X (dirección del viento)
         c.x += WIND * dt;
 
-        // Wrap-around en X respecto a la cámara
         if (c.x - camX >  wrap) c.x -= wrap * 2;
         if (c.x - camX < -wrap) c.x += wrap * 2;
-
-        // Wrap-around en Z respecto a la cámara (no es viento, es seguimiento)
         if (c.z - camZ >  wrap) c.z -= wrap * 2;
         if (c.z - camZ < -wrap) c.z += wrap * 2;
 
-        this._cloudDummy.position.set(c.x, c.y, c.z);
-        this._cloudDummy.scale.set(c.sx, c.sy, c.sz);
-        this._cloudDummy.rotation.y = c.ry;
-        this._cloudDummy.updateMatrix();
-        this._cloudMesh.setMatrixAt(i, this._cloudDummy.matrix);
+        dummy.position.set(c.x, c.y, c.z);
+        dummy.scale.set(c.sx, c.sy, c.sz);
+        dummy.updateMatrix();
+        this._cloudMesh.setMatrixAt(i, dummy.matrix);
       }
       this._cloudMesh.instanceMatrix.needsUpdate = true;
     }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  ☀️  _dayTToSunAngle(t) — mapeo asimétrico dayT → ángulo pivote
+  //  ─────────────────────────────────────────────────────────────
+  //  PROBLEMA ANTERIOR: `pivot.rotation.x = dayT × 2π` es una función
+  //  lineal que reparte los 360° de la órbita proporcionalmente al
+  //  tiempo, ignorando que las fases son asimétricas (día=50%,
+  //  noche=35%). Resultado: cuando empieza "dusk" (t=0.575), el sol
+  //  ya está a 0.575×360° = 207° → ¡bajo tierra! El sol debería
+  //  estar aún cerca del horizonte.
+  //
+  //  SOLUCIÓN — interpolación lineal por tramos con 4 anclas:
+  //
+  //  Cada ancla vincula un instante concreto del reloj (centro de
+  //  su fase) a un ángulo físico exacto del pivote:
+  //
+  //    t_dawn   = 0.0375  →  angle = 0        (sol en horizonte, saliendo)
+  //    t_noon   = 0.325   →  angle = π/2      (sol en el cénit)
+  //    t_dusk   = 0.6125  →  angle = π        (sol en horizonte, poniéndose)
+  //    t_night  = 0.7875  →  angle = 3π/2     (luna en el cénit)
+  //    t_dawn+1 = 1.0375  →  angle = 2π       (cierra el ciclo)
+  //
+  //  Verificación geométrica (sol en local Z=-110, pivote rota en X):
+  //    world_Y_sol  = 110 × sin(angle)   → 0 en horizonte, +110 en cénit ✓
+  //    world_Y_luna = –110 × sin(angle)  → +110 cuando angle=3π/2 ✓
+  //
+  //  Para t < t_dawn (= 0.0375) se suma 1.0 al tiempo antes de buscar
+  //  el segmento, haciendo que caiga en el último tramo [0.7875, 1.0375).
+  //  Esto produce un ángulo justo por debajo de 2π — el sol aún no ha
+  //  salido en el primer instante del ciclo.
+  // ─────────────────────────────────────────────────────────────
+  _dayTToSunAngle(t) {
+    const PI = Math.PI;
+
+    // Anclas (dayT, ángulo) — ordenadas ascendentemente por dayT
+    const K = [
+      [0.0375, 0       ],   // dawn center  — sol en horizonte E
+      [0.325,  PI / 2  ],   // noon center  — sol en cénit
+      [0.6125, PI      ],   // dusk center  — sol en horizonte O
+      [0.7875, PI * 1.5],   // midnight ctr — luna en cénit
+      [1.0375, PI * 2  ],   // dawn+1 cycle — cierra el ciclo
+    ];
+
+    // Para t antes de la primera ancla, desplazamos al último tramo
+    const tN = t < K[0][0] ? t + 1.0 : t;
+
+    for (let i = 0; i < K.length - 1; i++) {
+      const [t0, a0] = K[i];
+      const [t1, a1] = K[i + 1];
+      if (tN >= t0 && tN < t1) {
+        return a0 + (tN - t0) / (t1 - t0) * (a1 - a0);
+      }
+    }
+    return 0;  // fallback (no debe alcanzarse)
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -529,7 +609,7 @@ export class Environment {
       this._scene.fog.color.copy(this._curFog);
       this._ambient.color.copy(this._curAmbient);
       this._sun.color.copy(this._curSun);
-      this._pivot.rotation.x = this._dayT * Math.PI * 2;
+      this._pivot.rotation.x = this._dayTToSunAngle(this._dayT);
     }
   }
 
