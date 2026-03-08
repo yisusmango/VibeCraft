@@ -239,7 +239,22 @@ document.getElementById('btn-world-new').addEventListener('click', () => {
   launchWorld(name);
 });
 
-// ── [NUEVO] ── Crear el sistema de entorno, pasando escena y luces
+// ── btn-quit: "Guardar y salir al menú principal" ─────────────────
+//  FLUJO:
+//    1. Oculta el overlay de pausa (el controls 'unlock' ya lo mostraría
+//       de nuevo si no lo ocultamos manualmente primero)
+//    2. Restaura el menú principal añadiendo .menu-active al body →
+//       CSS oculta el HUD y muestra #main-menu
+//    3. isMenuVisible = true → animate() activa el panorama y pausa la física
+//
+//  NOTA: La lógica de guardado en IndexedDB se inyectará aquí en la
+//  siguiente fase, antes de las tres líneas de navegación.
+document.getElementById('btn-quit').addEventListener('click', () => {
+  // (futuro) await saveWorldToIndexedDB(currentWorldName);
+  document.getElementById('overlay').style.display = 'none';
+  document.body.classList.add('menu-active');
+  isMenuVisible = true;
+});
 //  IMPORTANTE: llamar DESPUÉS de initWorld() para que scene.background
 //  y scene.fog ya estén configurados (Environment los sobreescribirá
 //  frame a frame, pero necesita que existan).
