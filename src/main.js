@@ -190,8 +190,8 @@ async function renderWorldsList() {
         <span class="world-item__meta">${fmt(w.lastPlayed)} &nbsp;·&nbsp; ${w.blocks.length} bloques</span>
       </div>
       <div class="world-item__actions">
-        <button class="mc-btn mc-btn--sm btn-play"   data-id="${w.id}" data-name="${w.name}">Jugar</button>
-        <button class="mc-btn mc-btn--sm mc-btn--disabled" disabled>Exportar</button>
+        <button class="mc-btn mc-btn--sm btn-play"    data-id="${w.id}" data-name="${w.name}">Jugar</button>
+        <button class="mc-btn mc-btn--sm btn-export"  data-id="${w.id}" data-name="${w.name}">Exportar</button>
         <button class="mc-btn mc-btn--sm mc-btn--danger btn-delete" data-id="${w.id}">Borrar</button>
       </div>
     </div>
@@ -199,6 +199,7 @@ async function renderWorldsList() {
 
   elWorldsList.addEventListener('click', async (e) => {
     const playBtn   = e.target.closest('.btn-play');
+    const exportBtn = e.target.closest('.btn-export');
     const deleteBtn = e.target.closest('.btn-delete');
 
     if (playBtn) {
@@ -216,17 +217,42 @@ async function renderWorldsList() {
       launchWorld();
     }
 
+    // ── Exportar → descarga [nombre].vibecraft ───────────────────
+    //  FLUJO:
+    //   1. loadWorld() lee el objeto completo (id, name, blocks, lastPlayed)
+    //   2. JSON.stringify → texto plano legible
+    //   3. Blob (application/json) + createObjectURL → URL temporal en memoria
+    //   4. <a download> invisible → el navegador inicia la descarga del archivo
+    //   5. revokeObjectURL() → libera la memoria del Blob inmediatamente
+    //      (el navegador ya ha encolado la descarga antes de la revocación)
+    if (exportBtn) {
+      const id   = Number(exportBtn.dataset.id);
+      const name = exportBtn.dataset.name;
+      try {
+        const data = await loadWorld(id);
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href     = url;
+        a.download = `${name}.vibecraft`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        console.error('[VibeCraft] Error al exportar mundo:', err);
+      }
+    }
+
     if (deleteBtn) {
       const id = Number(deleteBtn.dataset.id);
       const item = deleteBtn.closest('.world-item');
-      item.style.opacity      = '0.4';
+      item.style.opacity       = '0.4';
       item.style.pointerEvents = 'none';
       try {
         await deleteWorld(id);
         await renderWorldsList();
       } catch (err) {
         console.error('[VibeCraft] Error al borrar mundo:', err);
-        item.style.opacity      = '';
+        item.style.opacity       = '';
         item.style.pointerEvents = '';
       }
     }
@@ -247,6 +273,66 @@ document.getElementById('btn-world-back').addEventListener('click', () => {
   elBtnCol.style.display   = 'flex';
   document.body.classList.remove('wm-active');
 });
+
+// ── btn-world-import: importar archivo .vibecraft desde disco ─────
+//  El botón está deshabilitado en el HTML; lo habilitamos aquí en JS
+//  para mantener index.html libre de lógica de estado.
+//
+//  FLUJO:
+//   1. Creamos un <input type="file"> invisible y lo activamos con .click().
+//      El navegador acepta esto como gesto de usuario (event listener de botón).
+//   2. FileReader.readAsText() lee el contenido del archivo seleccionado.
+//   3. JSON.parse() reconstruye el objeto; validamos campos mínimos.
+//   4. Nuevo id con Date.now() → evita colisiones aunque el archivo tenga
+//      el mismo id que un mundo existente en esta instalación.
+//   5. saveWorld() persiste en IndexedDB y renderWorldsList() refresca la UI.
+(function () {
+  const btn = document.getElementById('btn-world-import');
+  btn.disabled  = false;
+  btn.classList.remove('mc-btn--disabled');
+
+  btn.addEventListener('click', () => {
+    const input  = document.createElement('input');
+    input.type   = 'file';
+    input.accept = '.vibecraft';
+
+    input.addEventListener('change', () => {
+      const file = input.files?.[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = async (ev) => {
+        try {
+          const data = JSON.parse(ev.target.result);
+
+          // Validación mínima: necesitamos nombre y array de bloques
+          if (typeof data.name !== 'string' || !Array.isArray(data.blocks)) {
+            alert('Archivo .vibecraft inválido: faltan los campos "name" o "blocks".');
+            return;
+          }
+
+          const newId = Date.now();   // id fresco → nunca pisa un mundo local
+          await saveWorld(newId, data.name, data.blocks);
+          console.info(`[VibeCraft] Mundo "${data.name}" importado (${data.blocks.length} bloques).`);
+
+          // Mostrar el gestor con la lista actualizada
+          elBtnCol.style.display   = 'none';
+          elWorldMgr.style.display = 'flex';
+          document.body.classList.add('wm-active');
+          await renderWorldsList();
+
+        } catch (err) {
+          console.error('[VibeCraft] Error al importar .vibecraft:', err);
+          alert('No se pudo leer el archivo. Asegúrate de que es un .vibecraft válido.');
+        }
+      };
+
+      reader.readAsText(file);
+    });
+
+    input.click();   // abre el selector de archivos del SO
+  });
+})();
 
 // ── btn-world-new ─────────────────────────────────────────────────
 document.getElementById('btn-world-new').addEventListener('click', async () => {
@@ -397,8 +483,16 @@ function animate() {
 
   } else {
     // ── MODO JUEGO: pipeline completo ───────────────────────────
-    updatePhysics(dt, camera, controls);
-    updateRaycaster(camera, controls);
+    //  La física y el raycaster SOLO avanzan cuando el PointerLock
+    //  está activo (cursor capturado = jugador en control).
+    //  Si el menú de pausa está visible, controls.isLocked === false
+    //  y el jugador no puede moverse ni interactuar, pero el HUD y
+    //  el ciclo día/noche (environment.update, fuera de este bloque)
+    //  siguen corriendo con normalidad.
+    if (controls.isLocked) {
+      updatePhysics(dt, camera, controls);
+      updateRaycaster(camera, controls);
+    }
     updateHUD(player, blockMap, getTargetBlock());
   }
 
