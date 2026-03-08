@@ -340,7 +340,12 @@ export class Environment {
       color:      0xffffff,
       transparent: true,
       opacity:    0.82,
-      fog:        false,
+      // fog: true — los voxels de nube reaccionan a scene.fog.
+      // Esto hace que los bordes del InstancedMesh (≈1024 u del jugador)
+      // queden 100 % cubiertos por la niebla, ocultando la geometría finita
+      // del grid exactamente como lo hace Minecraft con su capa de nubes.
+      // MeshBasicMaterial soporta niebla nativamente via su shader GLSL.
+      fog:        true,
       depthWrite: false,
       side:       THREE.FrontSide,
     });
