@@ -205,23 +205,38 @@ function renderMockWorlds() {
 //  FLUJO:
 //    1. Oculta .mc-btn-col (los tres botones del menú principal)
 //    2. Muestra #world-manager con la lista de mundos
-//    3. Rellena la lista con mock data (llamada idempotente)
+//    3. Activa body.wm-active → CSS oculta splash y versión
+//    4. Rellena la lista con mock data (llamada idempotente)
 document.getElementById('btn-singleplayer').addEventListener('click', () => {
   elBtnCol.style.display   = 'none';
   elWorldMgr.style.display = 'flex';
+  document.body.classList.add('wm-active');
   renderMockWorlds();
 });
 
 // ── btn-world-back: vuelve al menú principal ──────────────────────
+//  Invierte exactamente el estado que abrió el gestor: desactiva el
+//  interruptor CSS para que reaparezcan splash y versión.
 document.getElementById('btn-world-back').addEventListener('click', () => {
   elWorldMgr.style.display = 'none';
   elBtnCol.style.display   = 'flex';
+  document.body.classList.remove('wm-active');
 });
 
-// ── btn-world-new: placeholder (Fase siguiente = generador de mundo) ─
+// ── btn-world-new: solicita nombre y lanza el mundo inmediatamente ─
+//  Por ahora usamos prompt() nativo (sin dependencias adicionales).
+//  El nombre se pasa a launchWorld(), que en fases posteriores lo
+//  usará para crear/cargar la entrada correspondiente en IndexedDB.
+//
+//  Casos manejados:
+//    • Usuario cancela (null)   → no hace nada, permanece en el gestor
+//    • Usuario envía vacío ("")  → no hace nada, requiere un nombre
+//    • Nombre válido             → trim() + launchWorld()
 document.getElementById('btn-world-new').addEventListener('click', () => {
-  // TODO: abrir panel de creación de mundo con nombre + seed
-  console.info('[VibeCraft] Crear Nuevo Mundo — pendiente de implementar');
+  const raw  = prompt('Introduce el nombre para tu nuevo mundo:');
+  const name = raw ? raw.trim() : '';
+  if (!name) return;           // cancelado o vacío → sin acción
+  launchWorld(name);
 });
 
 // ── [NUEVO] ── Crear el sistema de entorno, pasando escena y luces
