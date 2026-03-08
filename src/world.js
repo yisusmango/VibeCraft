@@ -3,6 +3,7 @@
 // ═══════════════════════════════════════════════════════════════
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
+import { createNoise2D } from 'https://unpkg.com/simplex-noise@4.0.1/dist/esm/simplex-noise.js';
 
 let _scene = null;
 export function initWorld(scene) { _scene = scene; }
@@ -385,10 +386,72 @@ export function getBlockMeshes() {
  * de la carga desde IndexedDB.
  */
 export function generateDefaultWorld() {
+  // ═══════════════════════════════════════════════════════════════
+  //  🌍  GENERACIÓN PROCEDURAL DE TERRENO — Simplex Noise
+  //  ─────────────────────────────────────────────────────────────
+  //  CÓMO FUNCIONA:
+  //
+  //  noise2D(x, z) devuelve un valor continuo en [-1, +1].
+  //  Dividir las coordenadas por SCALE "zooma" el mapa de ruido:
+  //
+  //    SCALE (suavidad de colinas):
+  //      Valor ALTO (>30) → puntos cercanos en el espacio del ruido
+  //      → poca variación entre columnas → colinas anchas y suaves.
+  //      Valor BAJO (<10) → cambios bruscos → terreno abrupto.
+  //      ► Rango recomendado: 15–40.
+  //
+  //    AMPLITUDE (rango de alturas en bloques):
+  //      Escala [-1,+1] a [-AMPLITUDE, +AMPLITUDE].
+  //      La altura final oscila entre BASE_HEIGHT−AMPLITUDE
+  //      y BASE_HEIGHT+AMPLITUDE.
+  //      Valor ALTO (>8) → montañas pronunciadas.
+  //      Valor BAJO (<3) → terreno casi plano.
+  //      ► Rango recomendado: 3–12.
+  //
+  //    BASE_HEIGHT (nivel del suelo, "nivel del mar"):
+  //      Con BASE_HEIGHT=4 y AMPLITUDE=5 el rango es [-1, +9].
+  //      Aumentar si quieres más capas de piedra bajo tierra.
+  //
+  //  CAPAS GEOLÓGICAS (de arriba a abajo):
+  //  ┌──────────────┬────────────────────────────────────────────┐
+  //  │  y == maxY   │  Hierba  — superficie expuesta al sol      │
+  //  │  maxY-2 <= y │  Tierra  — 2 bloques de transición         │
+  //  │  y < maxY-2  │  Piedra  — núcleo sólido                   │
+  //  └──────────────┴────────────────────────────────────────────┘
+  // ═══════════════════════════════════════════════════════════════
+
+  const noise2D = createNoise2D();   // semilla aleatoria en cada llamada
+
+  // ── Parámetros de topografía ─────────────────────────────────
+  const SCALE       = 22;   // suavidad de las colinas
+  const AMPLITUDE   = 5;    // variación máxima de altura (bloques)
+  const BASE_HEIGHT = 4;    // nivel base del suelo (Y "cero")
+
   const N = CONFIG.WORLD_SIZE;
-  for (let x = 0; x < N; x++)
-    for (let z = 0; z < N; z++)
-      addBlock(x, 0, z, 'grass');
+
+  for (let x = 0; x < N; x++) {
+    for (let z = 0; z < N; z++) {
+
+      // noise2D → [-1,+1]; round() discretiza a enteros de bloque
+      const noiseVal = noise2D(x / SCALE, z / SCALE);
+      const maxY     = Math.round(noiseVal * AMPLITUDE) + BASE_HEIGHT;
+
+      // Apilar bloques desde Y=0 hasta la superficie inclusive
+      for (let y = 0; y <= maxY; y++) {
+        let type;
+
+        if (y === maxY) {
+          type = 'grass';          // superficie: hierba
+        } else if (y >= maxY - 2) {
+          type = 'dirt';           // subsuperficie: 2 capas de tierra
+        } else {
+          type = 'stone';          // núcleo: piedra sólida
+        }
+
+        addBlock(x, y, z, type);
+      }
+    }
+  }
 }
 
 // ── Alias de compatibilidad — por si algún módulo antiguo importa generateWorld
