@@ -51,6 +51,27 @@
       </button>
     </nav>
 
+    <!-- ══════════════════════════════════════════════════════════
+         🌍  GESTOR DE MUNDOS — oculto hasta que el usuario pulsa
+         "Singleplayer". Se muestra/oculta por JS intercambiándolo
+         con .mc-btn-col sin abandonar el #main-menu.
+         ══════════════════════════════════════════════════════════ -->
+    <div id="world-manager" style="display:none;">
+      <h2 class="wm-title">Seleccionar Mundo</h2>
+
+      <!-- Lista scrolleable de mundos guardados -->
+      <div id="worlds-list">
+        <!-- Los .world-item se inyectan dinámicamente por main.js -->
+      </div>
+
+      <!-- Barra de acciones inferior -->
+      <div class="wm-actions">
+        <button id="btn-world-new"    class="mc-btn mc-btn--sm">Crear Nuevo</button>
+        <button id="btn-world-import" class="mc-btn mc-btn--sm mc-btn--disabled" disabled>Importar</button>
+        <button id="btn-world-back"   class="mc-btn mc-btn--sm">Volver</button>
+      </div>
+    </div>
+
     <p class="mc-version">VibeCraft Alpha · Three.js r158</p>
   </div>
 
