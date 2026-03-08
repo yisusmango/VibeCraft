@@ -40,7 +40,18 @@ document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87CEEB);        // azul cielo
-scene.fog        = new THREE.Fog(0x87CEEB, 40, 90);  // niebla para dar profundidad
+scene.fog        = new THREE.Fog(0x87CEEB, 60, 120);
+// ── Calibración niebla + nubes ───────────────────────────────────
+//  CLOUD_Y=60, cámara en y≈3 → distancia vertical a la capa = ~57 u.
+//
+//  Con near=60 / far=120:
+//    • Nubes en vertical (dist ≈57 u)   → 0 % niebla  — completamente visibles
+//    • Nubes a 45° (dist ≈83 u)         → 38% niebla  — desvanecimiento suave
+//    • Nubes en horizonte (dist ≈115 u) → 92% niebla  — casi invisibles
+//    • Borde del grid (dist ≈1025 u)    → 100% niebla — completamente oculto
+//
+//  El terreno conserva un horizonte neblinoso natural (empieza a los 60 u
+//  en lugar de 40 u anteriores, ganando algo más de profundidad de campo).
 
 // ═══════════════════════════════════════════════════════════════
 //  📷  CÁMARA EN PRIMERA PERSONA
