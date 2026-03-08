@@ -304,6 +304,14 @@ body.menu-active #hotbar { display: none !important; }
   user-select: none;
 }
 
+/* ── Wrapper: contiene el título y ancla el splash ── */
+.title-wrapper {
+  position: relative;      /* containing block para .mc-splash */
+  display: inline-block;   /* se contrae al ancho real del texto */
+  margin-bottom: 12px;     /* separación hacia los botones (antes en .mc-title) */
+  margin-top: 0;
+}
+
 /* ── Título ─────────────────────────────────────────────────────── */
 /*
    Técnica de borde negro:
@@ -313,6 +321,8 @@ body.menu-active #hotbar { display: none !important; }
    para imitar el degradado del logo de Minecraft.
 */
 .mc-title {
+  position: relative;   /* crea stacking context → queda bajo .mc-splash */
+  z-index: 1;
   font-family: 'Press Start 2P', 'Courier New', monospace;
   font-size: clamp(2.2rem, 6vw, 5rem);
   text-transform: uppercase;
@@ -332,26 +342,29 @@ body.menu-active #hotbar { display: none !important; }
   /* Resplandor suave amarillo alrededor del título */
   filter: drop-shadow(0 0 28px rgba(255, 200, 0, 0.45));
 
-  margin-bottom: 12px;
-  margin-top: -24px;   /* compensa el splash text encima */
+  margin: 0;
 }
 
 /* ── Splash text (texto decorativo giratorio) ───────────────────── */
 .mc-splash {
+  position: absolute;   /* sacado del flujo flex → puede ir encima del título */
+  z-index: 10;          /* por encima de .mc-title (z-index: 1) */
+  right: -5%;
+  bottom: -18%;
+  transform: rotate(-20deg);
+  transform-origin: right center;
   font-family: 'Press Start 2P', 'Courier New', monospace;
   font-size: clamp(0.45rem, 1.2vw, 0.65rem);
   color: #ffff55;
   text-shadow: 1px 1px 0 #8b8b00, 2px 2px 0 rgba(0,0,0,0.6);
-  transform: rotate(-12deg) translateX(40%);
-  margin-bottom: -8px;
-  align-self: center;
-  animation: splashBob 1.4s ease-in-out infinite;
+  white-space: nowrap;
   pointer-events: none;
+  animation: splashBob 1.4s ease-in-out infinite;
 }
 
 @keyframes splashBob {
-  0%, 100% { transform: rotate(-12deg) translateX(40%) scale(1.00); }
-  50%       { transform: rotate(-12deg) translateX(40%) scale(1.07); }
+  0%, 100% { transform: rotate(-20deg) scale(1.00); }
+  50%       { transform: rotate(-20deg) scale(1.10); }
 }
 
 /* ── Columna de botones ─────────────────────────────────────────── */
