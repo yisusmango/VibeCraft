@@ -369,9 +369,73 @@ export function getBlockMeshes() {
 // ═══════════════════════════════════════════════════════════════
 //  🌍  GENERACIÓN DEL MUNDO
 // ═══════════════════════════════════════════════════════════════
-export function generateWorld() {
+
+/**
+ * generateDefaultWorld — genera el terreno plano inicial.
+ * Solo se llama al CREAR un mundo nuevo; los mundos guardados se
+ * restauran mediante deserializeWorld() en lugar de esta función.
+ *
+ * Renombrada de generateWorld() para distinguirla semánticamente
+ * de la carga desde IndexedDB.
+ */
+export function generateDefaultWorld() {
   const N = CONFIG.WORLD_SIZE;
   for (let x = 0; x < N; x++)
     for (let z = 0; z < N; z++)
       addBlock(x, 0, z, 'grass');
+}
+
+// ── Alias de compatibilidad — por si algún módulo antiguo importa generateWorld
+export const generateWorld = generateDefaultWorld;
+
+// ═══════════════════════════════════════════════════════════════
+//  💾  SERIALIZACIÓN / DESERIALIZACIÓN
+//  Formato de bloque: "x,y,z:tipo"  (ej. "10,5,-3:stone")
+//  Elegido por legibilidad y compacidad frente a JSON por objeto.
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * serializeWorld — convierte blockMap en un array de strings.
+ * @returns {string[]}  ej. ["0,0,0:grass", "1,0,0:grass", "2,1,3:stone"]
+ */
+export function serializeWorld() {
+  const result = [];
+  for (const [key, mesh] of blockMap) {
+    // key ya tiene el formato "x,y,z", solo añadimos ":tipo"
+    result.push(`${key}:${mesh.userData.blockType}`);
+  }
+  return result;
+}
+
+/**
+ * deserializeWorld — restaura el mundo desde un array de strings.
+ * 1. Vacía la escena eliminando todos los bloques actuales.
+ * 2. Reconstruye cada bloque llamando a addBlock.
+ *
+ * @param {string[]} blocksArray — puede ser [] para limpiar sin cargar nada
+ */
+export function deserializeWorld(blocksArray) {
+  // ── Paso 1: limpiar el mundo actual ─────────────────────────────
+  //  Iteramos sobre una copia de las claves porque removeBlock modifica
+  //  blockMap durante la iteración (el for...of de un Map en vivo es
+  //  seguro, pero usar Array.from() elimina cualquier ambigüedad).
+  const keysToRemove = Array.from(blockMap.keys());
+  for (const key of keysToRemove) {
+    const { x, y, z } = blockMap.get(key).userData.blockPos;
+    removeBlock(x, y, z);
+  }
+
+  // ── Paso 2: reconstruir desde el array serializado ───────────────
+  for (const entry of blocksArray) {
+    // Formato: "x,y,z:tipo"  →  split en ':' da  ["x,y,z", "tipo"]
+    const colonIdx = entry.lastIndexOf(':');
+    if (colonIdx === -1) continue;               // entrada malformada → ignorar
+    const coords = entry.slice(0, colonIdx).split(',');
+    const type   = entry.slice(colonIdx + 1);
+    const x = Number(coords[0]);
+    const y = Number(coords[1]);
+    const z = Number(coords[2]);
+    if (isNaN(x) || isNaN(y) || isNaN(z)) continue;
+    addBlock(x, y, z, type);
+  }
 }
