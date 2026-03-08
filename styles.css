@@ -608,3 +608,16 @@ body.menu-active #hotbar { display: none !important; }
   color: #ffd0d0;
   text-shadow: 2px 2px 0 #5a0000;
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   🌍  INTERRUPTOR DE ESTADO — body.wm-active
+   ══════════════════════════════════════════════════════════════════
+   Cuando el Gestor de Mundos está visible, eliminamos del flujo los
+   elementos decorativos del menú principal que ya no tienen contexto
+   visual relevante: el splash text giratorio y la etiqueta de versión.
+
+   Se usa !important para sobreescribir el display que pudiera haber
+   asignado JS u otras reglas de especificidad media.
+   ══════════════════════════════════════════════════════════════════ */
+body.wm-active .mc-splash  { display: none !important; }
+body.wm-active .mc-version { display: none !important; }
