@@ -31,50 +31,70 @@ const DAY_DURATION  = 1200;  // segundos reales por ciclo completo
 //  sky    → scene.background / scene.fog.color
 //  ambient→ color de la AmbientLight
 //  sun    → color de la DirectionalLight (luz solar)
+//  cloud  → color multiplicativo del MeshBasicMaterial de las nubes
+//           (se multiplica por la textura blanca → produce el tinte)
+//
+//  TIEMPOS EXACTOS — ciclo de 20 minutos como Minecraft:
+//  ┌────────────┬──────────┬───────────┬─────────────────────────┐
+//  │ Fase       │ Duración │ % ciclo   │ dayT inicio             │
+//  ├────────────┼──────────┼───────────┼─────────────────────────┤
+//  │ Amanecer   │  1.5 min │   7.5 %   │ 0.000                   │
+//  │ Día (noon) │ 10.0 min │  50.0 %   │ 0.075                   │
+//  │ Atardecer  │  1.5 min │   7.5 %   │ 0.575                   │
+//  │ Noche      │  7.0 min │  35.0 %   │ 0.650                   │
+//  └────────────┴──────────┴───────────┴─────────────────────────┘
+//  Total: 0.075 + 0.500 + 0.075 + 0.350 = 1.000 ✓
+//
+//  La rotación del pivote (dayT × 2π) hace que:
+//    • dayT 0.000–0.075 : sol saliendo (amanecer corto de 7.5%)
+//    • dayT 0.075–0.575 : sol en lo alto durante 50% → día largo ✓
+//    • dayT 0.575–0.650 : sol poniéndose (atardecer corto)
+//    • dayT 0.650–1.000 : luna visible durante 35% → noche larga ✓
 const PHASES = {
   dawn: {
-    t:       0.00,
+    t:       0.000,                      // ← inicio del amanecer
     sky:     new THREE.Color(0xffb347),  // naranja cálido amanecer
     fog:     new THREE.Color(0xff9966),
     ambient: new THREE.Color(0xffa070),
     sun:     new THREE.Color(0xffe0aa),
     sunIntensity:     0.45,
     ambientIntensity: 0.40,
+    cloud:   new THREE.Color(0xffbb88),  // rosado-naranja: nubes al amanecer
   },
   noon: {
-    t:       0.25,
+    t:       0.075,                      // ← amanecer dura 7.5% → noon arranca aquí
     sky:     new THREE.Color(0x87CEEB),  // azul cielo de día
     fog:     new THREE.Color(0x87CEEB),
     ambient: new THREE.Color(0xffffff),
     sun:     new THREE.Color(0xfffbe0),
     sunIntensity:     0.90,
     ambientIntensity: 0.55,
+    cloud:   new THREE.Color(0xffffff),  // blanco puro al mediodía
   },
   dusk: {
-    t:       0.50,
+    t:       0.575,                      // ← día dura 50% → dusk arranca aquí
     sky:     new THREE.Color(0xff6030),  // rojo/naranja atardecer
     fog:     new THREE.Color(0xff7755),
     ambient: new THREE.Color(0xff8844),
     sun:     new THREE.Color(0xffaa55),
     sunIntensity:     0.35,
     ambientIntensity: 0.30,
+    cloud:   new THREE.Color(0xff9966),  // naranja encendido: nubes al atardecer
   },
   midnight: {
-    t:       0.75,
+    t:       0.650,                      // ← atardecer dura 7.5% → noche arranca aquí
     sky:     new THREE.Color(0x080c18),  // azul muy oscuro noche
     fog:     new THREE.Color(0x0a0f20),
     ambient: new THREE.Color(0x1a2844),  // azul nocturno tenue
     sun:     new THREE.Color(0x4466aa),
     sunIntensity:     0.00,
     ambientIntensity: 0.12,
+    cloud:   new THREE.Color(0x1e2233),  // gris-azul muy oscuro: nubes nocturnas
   },
 };
 
 // Orden garantizado para la interpolación circular
 const PHASE_ORDER = [PHASES.dawn, PHASES.noon, PHASES.dusk, PHASES.midnight];
-
-// ─── Colores de trabajo (reutilizados cada frame para no generar GC) ──
-const _tmpColor = new THREE.Color();
 
 // ═══════════════════════════════════════════════════════════════
 //  🌞  TEXTURA PROCEDURAL DEL SOL
@@ -219,6 +239,7 @@ export class Environment {
     this._curFog     = new THREE.Color();
     this._curAmbient = new THREE.Color();
     this._curSun     = new THREE.Color();
+    this._curCloud   = new THREE.Color();  // ← NUEVO: tinte interpolado de las nubes
 
     this._buildCelestials(scene);
     this._buildClouds(scene);
@@ -368,32 +389,41 @@ export class Environment {
     const phaseA = PHASE_ORDER[idx];
     const phaseB = PHASE_ORDER[(idx + 1) % len];
 
-    // t_next de phaseB: si B es dawn (t=0) y t>0.75 → usar t_next=1.0
+    // t_next de phaseB: si B es dawn (t=0) y t>0.65 → usar t_next=1.0
     const tA = phaseA.t;
     const tB = phaseB.t < tA ? phaseB.t + 1.0 : phaseB.t;
 
     // Alpha local en [0, 1]
     const alpha = tB > tA ? (t - tA) / (tB - tA) : 0;
 
-    // Interpolar colores
+    // Interpolar colores de cielo, niebla, ambiente y sol
     this._curSky    .copy(phaseA.sky    ).lerp(phaseB.sky,     alpha);
     this._curFog    .copy(phaseA.fog    ).lerp(phaseB.fog,     alpha);
     this._curAmbient.copy(phaseA.ambient).lerp(phaseB.ambient, alpha);
     this._curSun    .copy(phaseA.sun    ).lerp(phaseB.sun,     alpha);
 
-    // Interpolar intensidades
+    // ── NUEVO: interpolar color de nubes ─────────────────────────────
+    //  MeshBasicMaterial.color se MULTIPLICA por el color de la textura.
+    //  La textura tiene píxeles blancos/grises, así que multiplicar por
+    //  un color oscuro la vuelve oscura sin necesidad de recrear la textura.
+    //
+    //  Progresión:
+    //    dawn     → 0xffbb88  (rosado-naranja: reflejo del amanecer)
+    //    noon     → 0xffffff  (blanco puro: luz solar directa)
+    //    dusk     → 0xff9966  (naranja encendido: reflejo del atardecer)
+    //    midnight → 0x1e2233  (gris-azul muy oscuro: noche sin luna llena)
+    this._curCloud.copy(phaseA.cloud).lerp(phaseB.cloud, alpha);
+    this._cloudMesh.material.color.copy(this._curCloud);
+
+    // Interpolar intensidades de luces
     this._ambient.intensity = phaseA.ambientIntensity +
       (phaseB.ambientIntensity - phaseA.ambientIntensity) * alpha;
     this._sun.intensity = phaseA.sunIntensity +
       (phaseB.sunIntensity - phaseA.sunIntensity) * alpha;
 
-    // Opacidad de las nubes: bajar un poco de noche para no bloquear estrellas
-    //  (si en el futuro se añaden estrellas, este valor importará)
-    const nightAlpha = this._curSky.r < 0.15 ? 1 : 0;  // proxy de "es de noche"
-    _tmpColor.copy(phaseA.sky).lerp(phaseB.sky, alpha);
-    // Las nubes se vuelven semi-invisibles de noche
-    this._cloudMesh.material.opacity =
-      0.78 - (phaseA.ambientIntensity < 0.20 ? 0.35 : 0) * alpha;
+    // Opacidad de las nubes: fija en 0.78 — el color ya maneja la visibilidad nocturna.
+    // (Antes se hackeaba con opacity variable, pero eso causaba parpadeos al cambiar fase)
+    this._cloudMesh.material.opacity = 0.78;
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -411,7 +441,13 @@ export class Environment {
   //    midnight → 0.75   (medianoche)
   // ─────────────────────────────────────────────────────────────
   setTime(phase) {
-    const MAP = { dawn: 0.0, noon: 0.25, dusk: 0.50, midnight: 0.75 };
+    // ── Mapa actualizado con los tiempos asimétricos ──────────────
+    //  Valores coinciden exactamente con los .t de PHASES:
+    //    dawn     → 0.000  (inicio del amanecer de 7.5%)
+    //    noon     → 0.075  (inicio del día de 50%)
+    //    dusk     → 0.575  (inicio del atardecer de 7.5%)
+    //    midnight → 0.650  (inicio de la noche de 35%)
+    const MAP = { dawn: 0.000, noon: 0.075, dusk: 0.575, midnight: 0.650 };
     if (phase in MAP) {
       this._dayT = MAP[phase];
       // Forzar una actualización inmediata del color para que el
