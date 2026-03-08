@@ -16,12 +16,14 @@ import * as THREE from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 
 import { CONFIG }                           from './config.js';
-import { initWorld, generateWorld, blockMap } from './world.js';
+import { initWorld, generateDefaultWorld, blockMap,
+         serializeWorld, deserializeWorld }  from './world.js';
 import { initPlayer, updatePhysics, player } from './player.js';
 import { initInteraction, updateRaycaster, getTargetBlock } from './interaction.js';
 import { initUI, updateHUD }                from './ui.js';
-// ── [NUEVO] ── Importar el módulo de atmósfera ─────────────────
 import { Environment }                      from './environment.js';
+import { getAllWorlds, saveWorld,
+         loadWorld,   deleteWorld }         from './storage.js';
 
 // ═══════════════════════════════════════════════════════════════
 //  🖥️  RENDERER
@@ -123,7 +125,8 @@ let   panoramaAngle = 0;
 // ═══════════════════════════════════════════════════════════════
 
 initWorld(scene);
-generateWorld();
+// generateDefaultWorld() ya no se llama aquí:
+// cada mundo se carga/crea desde el Gestor de Mundos en los listeners de abajo.
 
 initPlayer(controls);
 initInteraction(scene, controls);
@@ -141,19 +144,18 @@ initUI(controls);
 //  Como el listener es mousedown/click en un botón, el navegador
 //  lo acepta como gesto válido.
 // ═══════════════════════════════════════════════════════════════
-// ═══════════════════════════════════════════════════════════════
-//  🌍  GESTOR DE MUNDOS — referencias DOM
+//  🌍  GESTOR DE MUNDOS — referencias DOM y estado
 // ═══════════════════════════════════════════════════════════════
 const elBtnCol     = document.querySelector('.mc-btn-col');
 const elWorldMgr   = document.getElementById('world-manager');
 const elWorldsList = document.getElementById('worlds-list');
 
-// ── Función de lanzamiento de partida ───────────────────────────
-//  Encapsula la lógica que antes estaba inline en btn-singleplayer.
-//  Se llama desde el botón "Jugar" de cada .world-item, pasando el
-//  nombre del mundo (para futura integración con IndexedDB).
-function launchWorld(worldName) {
-  console.info(`[VibeCraft] Cargando mundo: "${worldName}"`);
+// ── Estado global de la partida activa ──────────────────────────
+let currentWorldId   = null;
+let currentWorldName = '';
+
+// ── Lanzamiento de partida ───────────────────────────────────────
+function launchWorld() {
   isMenuVisible = false;
   document.body.classList.remove('menu-active');
   controls.getObject().rotation.set(0, 0, 0);
@@ -161,100 +163,127 @@ function launchWorld(worldName) {
   controls.lock();
 }
 
-// ── Mock data — inyecta mundos de prueba en #worlds-list ─────────
-//  TODO (Fase siguiente): sustituir por lectura real desde IndexedDB.
-//  Cada entrada usa la clase .world-item con info a la izquierda y
-//  botones de acción a la derecha.
-function renderMockWorlds() {
-  const mockWorlds = [
-    { name: 'Mi Rancho',         date: '08/03/2026', size: '128 KB' },
-    { name: 'Mundo de Pruebas',  date: '07/03/2026', size: '64 KB'  },
-  ];
+// ── Renderizado de la lista de mundos (IndexedDB) ─────────────────
+async function renderWorldsList() {
+  elWorldsList.innerHTML = '<p style="color:#888;font-size:.6rem;padding:12px;font-family:\'Courier New\',monospace;">Cargando mundos…</p>';
+  const worlds = await getAllWorlds();
 
-  elWorldsList.innerHTML = mockWorlds.map(w => `
-    <div class="world-item">
+  if (worlds.length === 0) {
+    elWorldsList.innerHTML = '<p style="color:#666;font-size:.6rem;padding:12px;font-family:\'Courier New\',monospace;">No hay mundos guardados. ¡Crea uno nuevo!</p>';
+    return;
+  }
+
+  const fmt = iso => {
+    const d = new Date(iso);
+    const dd   = String(d.getDate()).padStart(2,'0');
+    const mm   = String(d.getMonth()+1).padStart(2,'0');
+    const yyyy = d.getFullYear();
+    const hh   = String(d.getHours()).padStart(2,'0');
+    const min  = String(d.getMinutes()).padStart(2,'0');
+    return `${dd}/${mm}/${yyyy} ${hh}:${min}`;
+  };
+
+  elWorldsList.innerHTML = worlds.map(w => `
+    <div class="world-item" data-id="${w.id}">
       <div class="world-item__info">
         <span class="world-item__name">${w.name}</span>
-        <span class="world-item__meta">${w.date} &nbsp;·&nbsp; ${w.size}</span>
+        <span class="world-item__meta">${fmt(w.lastPlayed)} &nbsp;·&nbsp; ${w.blocks.length} bloques</span>
       </div>
       <div class="world-item__actions">
-        <button class="mc-btn mc-btn--sm btn-play"   data-world="${w.name}">Jugar</button>
+        <button class="mc-btn mc-btn--sm btn-play"   data-id="${w.id}" data-name="${w.name}">Jugar</button>
         <button class="mc-btn mc-btn--sm mc-btn--disabled" disabled>Exportar</button>
-        <button class="mc-btn mc-btn--sm mc-btn--danger btn-delete" data-world="${w.name}">Borrar</button>
+        <button class="mc-btn mc-btn--sm mc-btn--danger btn-delete" data-id="${w.id}">Borrar</button>
       </div>
     </div>
   `).join('');
 
-  // Event delegation: un solo listener en la lista captura todos los clics
-  elWorldsList.addEventListener('click', (e) => {
+  elWorldsList.addEventListener('click', async (e) => {
     const playBtn   = e.target.closest('.btn-play');
     const deleteBtn = e.target.closest('.btn-delete');
 
-    if (playBtn)   launchWorld(playBtn.dataset.world);
-    if (deleteBtn) {
-      // TODO: confirmar + eliminar de IndexedDB
-      const item = deleteBtn.closest('.world-item');
-      item.style.opacity = '0.4';
-      item.style.pointerEvents = 'none';
-      console.info(`[VibeCraft] (Mock) Borrar mundo: "${deleteBtn.dataset.world}"`);
+    if (playBtn) {
+      const id = Number(playBtn.dataset.id);
+      currentWorldId   = id;
+      currentWorldName = playBtn.dataset.name;
+      try {
+        const data = await loadWorld(id);
+        deserializeWorld(data.blocks ?? []);
+        await saveWorld(id, currentWorldName, data.blocks ?? []);
+      } catch (err) {
+        console.error('[VibeCraft] Error al cargar mundo:', err);
+        return;
+      }
+      launchWorld();
     }
-  }, { once: false });
+
+    if (deleteBtn) {
+      const id = Number(deleteBtn.dataset.id);
+      const item = deleteBtn.closest('.world-item');
+      item.style.opacity      = '0.4';
+      item.style.pointerEvents = 'none';
+      try {
+        await deleteWorld(id);
+        await renderWorldsList();
+      } catch (err) {
+        console.error('[VibeCraft] Error al borrar mundo:', err);
+        item.style.opacity      = '';
+        item.style.pointerEvents = '';
+      }
+    }
+  });
 }
 
-// ── btn-singleplayer: abre el gestor en lugar de entrar al juego ──
-//  FLUJO:
-//    1. Oculta .mc-btn-col (los tres botones del menú principal)
-//    2. Muestra #world-manager con la lista de mundos
-//    3. Activa body.wm-active → CSS oculta splash y versión
-//    4. Rellena la lista con mock data (llamada idempotente)
+// ── btn-singleplayer ──────────────────────────────────────────────
 document.getElementById('btn-singleplayer').addEventListener('click', () => {
   elBtnCol.style.display   = 'none';
   elWorldMgr.style.display = 'flex';
   document.body.classList.add('wm-active');
-  renderMockWorlds();
+  renderWorldsList();
 });
 
-// ── btn-world-back: vuelve al menú principal ──────────────────────
-//  Invierte exactamente el estado que abrió el gestor: desactiva el
-//  interruptor CSS para que reaparezcan splash y versión.
+// ── btn-world-back ────────────────────────────────────────────────
 document.getElementById('btn-world-back').addEventListener('click', () => {
   elWorldMgr.style.display = 'none';
   elBtnCol.style.display   = 'flex';
   document.body.classList.remove('wm-active');
 });
 
-// ── btn-world-new: solicita nombre y lanza el mundo inmediatamente ─
-//  Por ahora usamos prompt() nativo (sin dependencias adicionales).
-//  El nombre se pasa a launchWorld(), que en fases posteriores lo
-//  usará para crear/cargar la entrada correspondiente en IndexedDB.
-//
-//  Casos manejados:
-//    • Usuario cancela (null)   → no hace nada, permanece en el gestor
-//    • Usuario envía vacío ("")  → no hace nada, requiere un nombre
-//    • Nombre válido             → trim() + launchWorld()
-document.getElementById('btn-world-new').addEventListener('click', () => {
+// ── btn-world-new ─────────────────────────────────────────────────
+document.getElementById('btn-world-new').addEventListener('click', async () => {
   const raw  = prompt('Introduce el nombre para tu nuevo mundo:');
   const name = raw ? raw.trim() : '';
-  if (!name) return;           // cancelado o vacío → sin acción
-  launchWorld(name);
+  if (!name) return;
+
+  const id = Date.now();
+  currentWorldId   = id;
+  currentWorldName = name;
+
+  deserializeWorld([]);
+  generateDefaultWorld();
+
+  try {
+    await saveWorld(id, name, serializeWorld());
+  } catch (err) {
+    console.error('[VibeCraft] Error al guardar mundo nuevo:', err);
+  }
+  launchWorld();
 });
 
-// ── btn-quit: "Guardar y salir al menú principal" ─────────────────
-//  FLUJO:
-//    1. Oculta el overlay de pausa (el controls 'unlock' ya lo mostraría
-//       de nuevo si no lo ocultamos manualmente primero)
-//    2. Restaura el menú principal añadiendo .menu-active al body →
-//       CSS oculta el HUD y muestra #main-menu
-//    3. isMenuVisible = true → animate() activa el panorama y pausa la física
-//
-//  NOTA: La lógica de guardado en IndexedDB se inyectará aquí en la
-//  siguiente fase, antes de las tres líneas de navegación.
-document.getElementById('btn-quit').addEventListener('click', () => {
-  // (futuro) await saveWorldToIndexedDB(currentWorldName);
+// ── btn-quit ──────────────────────────────────────────────────────
+document.getElementById('btn-quit').addEventListener('click', async () => {
+  if (currentWorldId !== null) {
+    try {
+      await saveWorld(currentWorldId, currentWorldName, serializeWorld());
+      console.info(`[VibeCraft] Mundo "${currentWorldName}" guardado.`);
+    } catch (err) {
+      console.error('[VibeCraft] Error al guardar en btn-quit:', err);
+    }
+  }
   document.getElementById('overlay').style.display = 'none';
   document.body.classList.add('menu-active');
   isMenuVisible = true;
 });
+
 //  IMPORTANTE: llamar DESPUÉS de initWorld() para que scene.background
 //  y scene.fog ya estén configurados (Environment los sobreescribirá
 //  frame a frame, pero necesita que existan).
