@@ -1,30 +1,46 @@
 // ═══════════════════════════════════════════════════════════════
-//  src/interaction.js
-//  Responsabilidades:
-//    • Raycaster: detectar el bloque al que mira el jugador
-//    • Highlight: wireframe negro sobre el bloque apuntado
-//    • destroyBlock (clic izquierdo)
-//    • placeBlock   (clic derecho) — usa getCurrentBlockType() de ui.js
+//  src/interaction.js  —  VibeCraft · Fase 2: Raycaster para InstancedMesh
+//
+//  CAMBIOS RESPECTO A LA FASE ANTERIOR:
+//  ─────────────────────────────────────────────────────────────
+//  ANTES  │  blockMap almacenaba THREE.Mesh → un hit siempre tenía
+//         │  hit.object.userData.blockPos con las coordenadas.
+//
+//  AHORA  │  Los bloques sólidos viven en InstancedMeshes.
+//         │  Un hit sobre un InstancedMesh tiene hit.instanceId ≠ undefined.
+//         │  Las coordenadas se recuperan con:
+//         │    hit.object.userData.instances[hit.instanceId]  → {x,y,z,type}
+//         │  Las antorchas siguen siendo Mesh individuales y se gestionan
+//         │  exactamente igual que antes.
+//
+//  HIGHLIGHT:
+//    • Bloque sólido (InstancedMesh): position.set(bx, by, bz),
+//      quaternion identity, scale (1.03, 1.03, 1.03)
+//    • Antorcha (Mesh individual): position/quaternion copiados del mesh
+//      real, scale (0.22, 0.62, 0.22) para encajar el palo
+//
+//  FACE NORMAL CON INSTANCEDMESH:
+//    hit.face.normal es en espacio local del InstancedMesh.
+//    Como nuestros InstancedMeshes tienen transformación identidad
+//    (solo posición vía setMatrixAt, sin rotación), el espacio local
+//    coincide con el mundo → no se necesita transformación adicional.
 // ═══════════════════════════════════════════════════════════════
 
 import * as THREE from 'three';
-import { CONFIG, HALF_W }                              from './config.js';
+import { CONFIG, HALF_W }                                  from './config.js';
 import { addBlock, removeBlock, hasBlock, getBlockMeshes } from './world.js';
-import { player }                                      from './player.js';
-// ── NUEVO: leer el tipo de bloque seleccionado en el Hotbar ─────
-import { getCurrentBlockType }                         from './ui.js';
+import { player }                                          from './player.js';
+import { getCurrentBlockType }                             from './ui.js';
 
 // ═══════════════════════════════════════════════════════════════
 //  🎯  RAYCASTER
 //  ─────────────────────────────────────────────────────────────
 //  MATEMÁTICA:
-//  1. setFromCamera(NDC_CENTER, camera) reconstruye el rayo desde
-//     el centro de la pantalla (NDC 0,0) usando la proyección
-//     inversa de la cámara.
-//  2. intersectObjects() hace test rayo-BoundingBox (O(1)) y luego
-//     rayo-triángulo Möller–Trumbore por cada cara del cubo.
-//  3. face.normal devuelve la normal de la cara golpeada en espacio
-//     objeto: (0,1,0)=superior, (1,0,0)=derecha, etc.
+//  1. setFromCamera(NDC(0,0), camera) reconstruye el rayo desde
+//     el centro de la pantalla usando la proyección inversa.
+//  2. intersectObjects() sobre InstancedMesh detecta la instancia
+//     golpeada y rellena hit.instanceId con su índice.
+//  3. hit.object.userData.instances[hit.instanceId] → {x,y,z,type}
 //  4. Para COLOCAR: nuevoBloque = bloqueGolpeado + round(normal)
 // ═══════════════════════════════════════════════════════════════
 
@@ -33,12 +49,9 @@ raycaster.far    = CONFIG.MAX_REACH;
 const NDC_CENTER = new THREE.Vector2(0, 0);
 
 // ── Wireframe de selección ───────────────────────────────────────
-//  Geometría base 1×1×1 (UNIT CUBE). La escala se ajusta por frame
-//  en updateRaycaster() según el tipo de bloque apuntado:
-//    • bloque sólido  → scale (1.03, 1.03, 1.03)  — margen anti z-fight
-//    • antorcha       → scale (0.22, 0.62, 0.22)  — encaja el palo 0.2×0.6×0.2
-//  Usar scale en lugar de re-crear EdgesGeometry cada frame evita
-//  trabajo de CPU innecesario y no genera GC.
+//  Geometría base 1×1×1. La escala se ajusta por frame:
+//    • bloque sólido → scale (1.03, 1.03, 1.03)  anti z-fight
+//    • antorcha      → scale (0.22, 0.62, 0.22)  encaja el palo
 const highlightMesh = new THREE.LineSegments(
   new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
   new THREE.LineBasicMaterial({ color: 0x000000, linewidth: 1 })
@@ -53,6 +66,15 @@ export const getTargetFaceNormal = () => targetFaceNormal;
 
 // ═══════════════════════════════════════════════════════════════
 //  🔦  updateRaycaster — llamar cada frame
+//  ─────────────────────────────────────────────────────────────
+//  Flujo de detección:
+//    intersectObjects(getBlockMeshes())
+//      └─ hit sobre InstancedMesh (instanceId ≥ 0)
+//           → coordenadas desde userData.instances[instanceId]
+//           → highlight: position.set(bx, by, bz), rot=identity
+//      └─ hit sobre Mesh individual (antorcha)
+//           → coordenadas desde hit.object.userData.blockPos
+//           → highlight: position/quaternion copiados del mesh
 // ═══════════════════════════════════════════════════════════════
 
 export function updateRaycaster(camera, controls) {
@@ -65,25 +87,50 @@ export function updateRaycaster(camera, controls) {
   raycaster.setFromCamera(NDC_CENTER, camera);
   const hits = raycaster.intersectObjects(getBlockMeshes());
 
-  if (hits.length > 0) {
-    const hit        = hits[0];
+  if (hits.length === 0) {
+    targetBlock = targetFaceNormal = null;
+    highlightMesh.visible = false;
+    return;
+  }
+
+  const hit = hits[0];
+
+  // ── ¿Hit sobre un InstancedMesh? ─────────────────────────────────
+  //  hit.instanceId es un número ≥ 0 cuando el objeto golpeado es un
+  //  InstancedMesh. Para Mesh individuales (antorchas) es undefined.
+  if (hit.instanceId !== undefined && hit.object.userData.instances) {
+
+    const inst = hit.object.userData.instances[hit.instanceId];
+
+    // inst puede ser undefined si el rebuild está en progreso y el
+    // instanceId aún no fue rellenado. Protección defensiva:
+    if (!inst) {
+      targetBlock = targetFaceNormal = null;
+      highlightMesh.visible = false;
+      return;
+    }
+
+    targetBlock      = { x: inst.x, y: inst.y, z: inst.z };
+    targetFaceNormal = hit.face.normal.clone();
+    // face.normal en espacio local del InstancedMesh.
+    // Nuestros InstancedMeshes no tienen rotación (solo setPosition),
+    // así que local == world y no necesitamos transformar el vector.
+
+    // Highlight: posición exacta en grid, sin rotación, escala 1.03
+    highlightMesh.position.set(inst.x, inst.y, inst.z);
+    highlightMesh.quaternion.set(0, 0, 0, 1);  // identidad
+    highlightMesh.scale.set(1.03, 1.03, 1.03);
+    highlightMesh.visible = true;
+
+  } else {
+    // ── Hit sobre Mesh individual (antorcha) ───────────────────────
+    //  Las antorchas conservan userData.blockPos, .blockType y la
+    //  posición/rotación real del mesh para el highlight.
     targetBlock      = hit.object.userData.blockPos;
     targetFaceNormal = hit.face.normal.clone();
 
-    // ── Sincronizar highlight con el mesh golpeado ──────────────
-    //  ANTES: usábamos blockPos (coordenadas enteras del bloque lógico)
-    //  para posicionar el cubo, lo que ignoraba la posición y rotación
-    //  real del mesh. Las antorchas en pared quedaban con el contorno
-    //  a 0.2−0.35 unidades de distancia del palo visible.
-    //
-    //  AHORA:
-    //  1. position.copy() — copia la posición EXACTA del mesh 3D,
-    //     incluyendo el offset de antorchas en pared (e.g. x ± 0.35).
-    //  2. quaternion.copy() — replica la rotación, por lo que el cubo
-    //     de selección se inclina junto con el palo de la antorcha.
-    //  3. scale.set() — ajusta el tamaño al de la geometría real:
-    //       • antorcha : 0.2 × 0.6 × 0.2  +  margen de 0.02 por eje
-    //       • sólido   : 1   × 1   × 1    +  margen de 0.03 (anti z-fight)
+    // Copiar posición y rotación del mesh real de la antorcha para que
+    // el wireframe se incline junto con el palo (≠ block grid position)
     highlightMesh.position.copy(hit.object.position);
     highlightMesh.quaternion.copy(hit.object.quaternion);
 
@@ -94,9 +141,6 @@ export function updateRaycaster(camera, controls) {
     }
 
     highlightMesh.visible = true;
-  } else {
-    targetBlock = targetFaceNormal = null;
-    highlightMesh.visible = false;
   }
 }
 
@@ -104,31 +148,17 @@ export function updateRaycaster(camera, controls) {
 //  🖱️  ACCIONES DE INTERACCIÓN
 // ═══════════════════════════════════════════════════════════════
 
-// ── Bloques no sólidos ───────────────────────────────────────────
-//  Estos tipos tienen geometría menor al cubo 1×1×1, por lo que NO
-//  deben bloquear la colocación aunque el jugador esté en la celda
-//  adyacente. Sin esto, wouldOverlapPlayer usaría dimensiones 1×1×1
-//  y rechazaría colocar una antorcha junto al jugador aunque el palo
-//  de 0.2×0.6×0.2 no le alcance físicamente.
-//
-//  NOTA: player.js sigue usando hasBlock() para colisiones, lo que
-//  significa que la AABB del jugador seguirá chocando con la celda
-//  de la antorcha (1×1×1 lógica). Esto es un trade-off aceptable
-//  para esta fase; en una fase futura se puede añadir un mapa de
-//  colisión por tipo de bloque en config.js.
+// ── Tipos no sólidos ─────────────────────────────────────────────
+//  Los bloques de esta lista tienen geometría menor a 1×1×1,
+//  por lo que su celda no impide colocar un bloque adyacente
+//  aunque el jugador esté cerca.
 const NON_SOLID_TYPES = new Set(['torch']);
 
 /**
  * Comprueba si un bloque en (bx,by,bz) solaparía con el AABB del jugador.
- * Si el bloque es de tipo no sólido (antorcha, etc.) siempre devuelve false.
- * @param {number} bx
- * @param {number} by
- * @param {number} bz
- * @param {string} [blockType='grass'] — tipo del bloque a colocar
- * @returns {boolean}
+ * Devuelve false para tipos no sólidos (antorchas).
  */
 function wouldOverlapPlayer(bx, by, bz, blockType = 'grass') {
-  // Los bloques no sólidos pueden colocarse junto al jugador sin problema
   if (NON_SOLID_TYPES.has(blockType)) return false;
 
   const { x: px, y: py, z: pz } = player.position;
@@ -149,15 +179,8 @@ function destroyBlock() {
 
 /**
  * Coloca un bloque en la cara adyacente del bloque apuntado (clic derecho).
- *
- * CAMBIO: se pasa `targetFaceNormal` como quinto argumento a addBlock.
- * world.js lo usa para determinar la orientación de la antorcha:
- *   • normal (0,+1,0) → suelo  → antorcha vertical
- *   • normal (0,−1,0) → techo  → colocación cancelada en world.js
- *   • normal (±1,0,0) → pared  → antorcha inclinada 30° en eje Z
- *   • normal (0,0,±1) → pared  → antorcha inclinada 30° en eje X
- *
- * Para bloques normales el normal se ignora completamente.
+ * Pasa targetFaceNormal a addBlock para que world.js pueda orientar
+ * correctamente las antorchas en pared.
  */
 function placeBlock() {
   if (!targetBlock || !targetFaceNormal) return;
@@ -168,10 +191,9 @@ function placeBlock() {
 
   const selectedType = getCurrentBlockType();
 
-  if (hasBlock(nx, ny, nz))                          return;
-  if (wouldOverlapPlayer(nx, ny, nz, selectedType))  return;
+  if (hasBlock(nx, ny, nz))                         return;
+  if (wouldOverlapPlayer(nx, ny, nz, selectedType)) return;
 
-  // ── CAMBIO: pasar el vector normal para orientar la antorcha ──
   addBlock(nx, ny, nz, selectedType, targetFaceNormal);
 }
 
