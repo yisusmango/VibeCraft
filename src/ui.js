@@ -201,10 +201,19 @@ function setSlot(index) {
  * @param {object} controls — PointerLockControls
  */
 export function initUI(controls) {
-  // Overlay de inicio / pausa
+  // Overlay: se muestra al desbloquear el puntero (ESC), se oculta al bloquear
+  // CAMBIO: eliminado el listener de clic en overlayEl — ya no se cierra clicando
+  // en cualquier parte del overlay. Ahora solo "Volver al juego" o ESC lo cierran.
   controls.addEventListener('lock',   () => { overlayEl.style.display = 'none'; });
   controls.addEventListener('unlock', () => { overlayEl.style.display = 'flex'; });
-  overlayEl.addEventListener('click', () => controls.lock());
+
+  // ── btn-resume: "Volver al juego" → reactiva el PointerLock ────
+  //  Equivalente al clic que había en todo el overlay, pero ahora
+  //  acotado al botón específico para no capturar clics accidentales
+  //  en el fondo semitransparente del menú de pausa.
+  document.getElementById('btn-resume').addEventListener('click', () => {
+    controls.lock();
+  });
 
   // Hotbar
   buildHotbar();
