@@ -5,8 +5,8 @@
 //      ambientLight y sunLight interpolados con lerp)
 //    • Sol y Luna visibles: geometría con texturas procedurales,
 //      pivote que rota sobre el eje X y sigue al jugador
-//    • Nubes flotantes: plano con textura procedimental transparente
-//      cuyo offset avanza lentamente cada frame
+//    • Nubes 3D volumétricas: InstancedMesh de cajas planas con
+//      wrap-around relativo a la cámara para cielo infinito
 // ═══════════════════════════════════════════════════════════════
 
 import * as THREE from 'three';
@@ -27,74 +27,107 @@ import * as THREE from 'three';
 //   Cambia a 60 para testing rápido, a 1200 para producción.
 const DAY_DURATION  = 1200;  // segundos reales por ciclo completo
 
-// ─── Paleta de colores para cada fase del día ──────────────────
-//  sky    → scene.background / scene.fog.color
-//  ambient→ color de la AmbientLight
-//  sun    → color de la DirectionalLight (luz solar)
-//  cloud  → color multiplicativo del MeshBasicMaterial de las nubes
-//           (se multiplica por la textura blanca → produce el tinte)
+// ─── Tabla de stops del ciclo día/noche ────────────────────────
 //
-//  TIEMPOS EXACTOS — ciclo de 20 minutos como Minecraft:
-//  ┌────────────┬──────────┬───────────┬─────────────────────────┐
-//  │ Fase       │ Duración │ % ciclo   │ dayT inicio             │
-//  ├────────────┼──────────┼───────────┼─────────────────────────┤
-//  │ Amanecer   │  1.5 min │   7.5 %   │ 0.000                   │
-//  │ Día (noon) │ 10.0 min │  50.0 %   │ 0.075                   │
-//  │ Atardecer  │  1.5 min │   7.5 %   │ 0.575                   │
-//  │ Noche      │  7.0 min │  35.0 %   │ 0.650                   │
-//  └────────────┴──────────┴───────────┴─────────────────────────┘
-//  Total: 0.075 + 0.500 + 0.075 + 0.350 = 1.000 ✓
+//  PROBLEMA ANTERIOR: con 4 keyframes equidistantes, la interpolación
+//  lineal hacía que la noche (35%) se fuera aclarando continuamente
+//  desde el primer segundo, y el día (50%) fuera perdiendo color todo
+//  el rato hacia el atardecer.
 //
-//  La rotación del pivote (dayT × 2π) hace que:
-//    • dayT 0.000–0.075 : sol saliendo (amanecer corto de 7.5%)
-//    • dayT 0.075–0.575 : sol en lo alto durante 50% → día largo ✓
-//    • dayT 0.575–0.650 : sol poniéndose (atardecer corto)
-//    • dayT 0.650–1.000 : luna visible durante 35% → noche larga ✓
-const PHASES = {
-  dawn: {
-    t:       0.000,                      // ← inicio del amanecer
-    sky:     new THREE.Color(0xffb347),  // naranja cálido amanecer
-    fog:     new THREE.Color(0xff9966),
-    ambient: new THREE.Color(0xffa070),
-    sun:     new THREE.Color(0xffe0aa),
-    sunIntensity:     0.45,
-    ambientIntensity: 0.40,
-    cloud:   new THREE.Color(0xffbb88),  // rosado-naranja: nubes al amanecer
-  },
-  noon: {
-    t:       0.075,                      // ← amanecer dura 7.5% → noon arranca aquí
-    sky:     new THREE.Color(0x87CEEB),  // azul cielo de día
-    fog:     new THREE.Color(0x87CEEB),
-    ambient: new THREE.Color(0xffffff),
-    sun:     new THREE.Color(0xfffbe0),
-    sunIntensity:     0.90,
-    ambientIntensity: 0.55,
-    cloud:   new THREE.Color(0xffffff),  // blanco puro al mediodía
-  },
-  dusk: {
-    t:       0.575,                      // ← día dura 50% → dusk arranca aquí
-    sky:     new THREE.Color(0xff6030),  // rojo/naranja atardecer
-    fog:     new THREE.Color(0xff7755),
-    ambient: new THREE.Color(0xff8844),
-    sun:     new THREE.Color(0xffaa55),
-    sunIntensity:     0.35,
-    ambientIntensity: 0.30,
-    cloud:   new THREE.Color(0xff9966),  // naranja encendido: nubes al atardecer
-  },
-  midnight: {
-    t:       0.650,                      // ← atardecer dura 7.5% → noche arranca aquí
-    sky:     new THREE.Color(0x080c18),  // azul muy oscuro noche
-    fog:     new THREE.Color(0x0a0f20),
-    ambient: new THREE.Color(0x1a2844),  // azul nocturno tenue
-    sun:     new THREE.Color(0x4466aa),
-    sunIntensity:     0.00,
-    ambientIntensity: 0.12,
-    cloud:   new THREE.Color(0x1e2233),  // gris-azul muy oscuro: nubes nocturnas
-  },
-};
+//  SOLUCIÓN — 6 stops con "plateaus" duplicados:
+//
+//  ┌─────┬────────┬──────────────────────────────────────────────────┐
+//  │ idx │  dayT  │ Descripción                                      │
+//  ├─────┼────────┼──────────────────────────────────────────────────┤
+//  │  0  │ 0.000  │ AMANECER — inicio transición amanecer→día (7.5%) │
+//  │  1  │ 0.075  │ DÍA START — plateau comienza (mismos colores…)   │
+//  │  2  │ 0.575  │ DÍA END   — …que stop 1 → 50% sin cambio visual  │
+//  │  3  │ 0.613  │ ATARDECER — pico naranja de la transición (7.5%) │
+//  │  4  │ 0.650  │ NOCHE START — plateau comienza (mismos colores…) │
+//  │  5  │ 0.925  │ NOCHE END   — …que stop 4 → 35% sin cambio visual│
+//  │     │ (1.000)│ → wrap al stop 0: transición noche→amanecer 7.5% │
+//  └─────┴────────┴──────────────────────────────────────────────────┘
+//
+//  Duración de cada tramo:
+//    0.000→0.075 = 7.5%  → amanecer   1.5 min ✓
+//    0.075→0.575 = 50%   → día       10.0 min ✓  (plateau: color fijo)
+//    0.575→0.650 = 7.5%  → atardecer  1.5 min ✓  (pico naranja a t=0.613)
+//    0.650→0.925 = 27.5% → noche      5.5 min ✓  (plateau: color fijo)
+//    0.925→1.000 = 7.5%  → amanecer   1.5 min ✓  (se cierra el ciclo)
+//    Total noche + dawn = 35% = 7 min ✓
+//
+//  La clave: stops 1 y 2 tienen colores idénticos → lerp = 0 cambio.
+//            stops 4 y 5 tienen colores idénticos → lerp = 0 cambio.
 
-// Orden garantizado para la interpolación circular
-const PHASE_ORDER = [PHASES.dawn, PHASES.noon, PHASES.dusk, PHASES.midnight];
+// ── Colores reutilizados para los plateaus (evita objetos duplicados) ─
+const _noonSky     = new THREE.Color(0x87CEEB);
+const _noonFog     = new THREE.Color(0x87CEEB);
+const _noonAmbient = new THREE.Color(0xffffff);
+const _noonSun     = new THREE.Color(0xfffbe0);
+const _noonCloud   = new THREE.Color(0xffffff);
+
+const _nightSky     = new THREE.Color(0x080c18);
+const _nightFog     = new THREE.Color(0x0a0f20);
+const _nightAmbient = new THREE.Color(0x1a2844);
+const _nightSun     = new THREE.Color(0x4466aa);
+const _nightCloud   = new THREE.Color(0x1e2233);
+
+const PHASE_ORDER = [
+
+  // ── Stop 0 ─ AMANECER: inicio de la transición al día ─────────
+  { t: 0.000,
+    sky: new THREE.Color(0xffb347), fog: new THREE.Color(0xff9966),
+    ambient: new THREE.Color(0xffa070), sun: new THREE.Color(0xffe0aa),
+    sunIntensity: 0.45, ambientIntensity: 0.40,
+    cloud: new THREE.Color(0xffbb88),        // rosado-naranja amanecer
+  },
+
+  // ── Stop 1 ─ DÍA (plateau START) ──────────────────────────────
+  { t: 0.075,
+    sky: _noonSky, fog: _noonFog, ambient: _noonAmbient, sun: _noonSun,
+    sunIntensity: 0.90, ambientIntensity: 0.55,
+    cloud: _noonCloud,                       // blanco puro
+  },
+
+  // ── Stop 2 ─ DÍA (plateau END — colores IDÉNTICOS al stop 1) ──
+  //  Efecto: el lerp entre stop 1 y stop 2 no produce cambio visual.
+  //  El color del cielo permanece azul-cielo fijo durante 50%.
+  { t: 0.575,
+    sky: _noonSky, fog: _noonFog, ambient: _noonAmbient, sun: _noonSun,
+    sunIntensity: 0.90, ambientIntensity: 0.55,
+    cloud: _noonCloud,
+  },
+
+  // ── Stop 3 ─ ATARDECER: pico de la transición (mitad de 7.5%) ─
+  //  La transición ocupa 0.575→0.650 (7.5%).
+  //  Este stop en t=0.613 es el pico de naranja; el cielo sube al
+  //  rojo-naranja y luego baja rápidamente hacia el azul nocturno.
+  { t: 0.613,
+    sky: new THREE.Color(0xff6030), fog: new THREE.Color(0xff7755),
+    ambient: new THREE.Color(0xff8844), sun: new THREE.Color(0xffaa55),
+    sunIntensity: 0.35, ambientIntensity: 0.30,
+    cloud: new THREE.Color(0xff9966),        // naranja encendido
+  },
+
+  // ── Stop 4 ─ NOCHE (plateau START) ────────────────────────────
+  { t: 0.650,
+    sky: _nightSky, fog: _nightFog, ambient: _nightAmbient, sun: _nightSun,
+    sunIntensity: 0.00, ambientIntensity: 0.12,
+    cloud: _nightCloud,                      // gris-azul oscuro
+  },
+
+  // ── Stop 5 ─ NOCHE (plateau END — colores IDÉNTICOS al stop 4) ─
+  //  Efecto: el lerp entre stop 4 y stop 5 no produce cambio visual.
+  //  El cielo permanece oscuro durante 27.5%.
+  //  Tras este stop, el ciclo hace wrap a stop 0 (t→1.0 = dawn),
+  //  produciendo la transición final noche→amanecer de 7.5%.
+  { t: 0.925,
+    sky: _nightSky, fog: _nightFog, ambient: _nightAmbient, sun: _nightSun,
+    sunIntensity: 0.00, ambientIntensity: 0.12,
+    cloud: _nightCloud,
+  },
+
+];
 
 // ═══════════════════════════════════════════════════════════════
 //  🌞  TEXTURA PROCEDURAL DEL SOL
@@ -170,49 +203,6 @@ function makeMoonTexture() {
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.magFilter = THREE.NearestFilter;
-  return tex;
-}
-
-// ═══════════════════════════════════════════════════════════════
-//  ☁️  TEXTURA PROCEDURAL DE NUBES
-//  Parches cuadrados blancos sobre fondo totalmente transparente.
-//  Estética vóxel: cada "nube" es un conjunto de rectángulos.
-// ═══════════════════════════════════════════════════════════════
-function makeCloudTexture() {
-  const size   = 512;
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = size;
-  const ctx    = canvas.getContext('2d');
-
-  ctx.clearRect(0, 0, size, size);
-
-  // Generamos 18 "copos" de nube, cada uno con 6-10 bloques cuadrados
-  const rng = () => Math.random();
-  const cloudCount = 18;
-
-  for (let c = 0; c < cloudCount; c++) {
-    const cx  = (rng() * size) | 0;
-    const cy  = (rng() * size) | 0;
-    const blocks = 6 + ((rng() * 5) | 0);
-    const blockSize = 24 + ((rng() * 16) | 0);  // 24–40 px
-
-    // Color ligeramente variable: blanco a gris muy claro
-    const v = 230 + ((rng() * 25) | 0);
-    ctx.fillStyle = `rgba(${v}, ${v}, ${v}, 0.88)`;
-
-    for (let b = 0; b < blocks; b++) {
-      const ox = cx + ((rng() * blockSize * 2 - blockSize) | 0);
-      const oy = cy + ((rng() * blockSize     - blockSize / 2) | 0);
-      const bw = blockSize + ((rng() * 16) | 0);
-      const bh = (blockSize * 0.55) | 0;
-      ctx.fillRect(ox, oy, bw, bh);
-    }
-  }
-
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(4, 4);            // teselar 4x para mayor densidad
-  tex.magFilter = THREE.LinearFilter;
   return tex;
 }
 
@@ -297,21 +287,72 @@ export class Environment {
   }
 
   _buildClouds(scene) {
-    this._cloudTex = makeCloudTexture();
+    // ── Nubes 3D — InstancedMesh ──────────────────────────────────
+    //
+    //  DISEÑO:
+    //  • 1 sola draw call gracias a InstancedMesh (vs N draw calls con Mesh[])
+    //  • BoxGeometry(1,1,1) base; la escala por instancia da el tamaño real.
+    //    Cada nube tiene ancho ~8–18, alto ~1.5–3, prof ~6–14 unidades.
+    //  • Rotación Y aleatoria para evitar que todas queden paralelas al eje Z.
+    //  • MeshBasicMaterial: no responde a luces → color totalmente predecible.
+    //    .color = _curCloud  → el tinte lo maneja _interpolatePhase() igual
+    //    que antes, sin cambios en la interfaz pública.
+    //
+    //  WRAP-AROUND (cielo infinito):
+    //  Cada frame avanzamos c.x += windSpeed * dt.
+    //  Si una nube supera ±CLOUD_SPREAD respecto a la cámara (en X o Z),
+    //  la teletransportamos al lado opuesto desplazando exactamente
+    //  CLOUD_SPREAD*2 unidades para mantener la densidad uniforme.
+    //
+    //  RENDIMIENTO:
+    //  48 instancias × BoxGeometry (12 tri) = 576 triángulos totales.
+    //  Actualizar 48 matrices/frame es O(48) operaciones triviales.
+    //  Impacto en FPS: ~0.
 
-    const cloudGeo = new THREE.PlaneGeometry(220, 220);
+    const CLOUD_COUNT  = 48;
+    const CLOUD_SPREAD = 110;    // radio del área cubierta (110 × 2 = 220 m)
+    const CLOUD_Y      = 42;     // misma altura que las antiguas nubes 2D
+
+    const cloudGeo = new THREE.BoxGeometry(1, 1, 1);
     const cloudMat = new THREE.MeshBasicMaterial({
-      map:         this._cloudTex,
+      color:       0xffffff,    // blanco base; _interpolatePhase() lo tinta
       transparent: true,
-      opacity:     0.78,
-      fog:         false,
-      depthWrite:  false,
-      side:        THREE.DoubleSide,
+      opacity:     0.82,
+      fog:         false,       // siempre visibles, sin desvanecerse en la niebla
+      depthWrite:  false,       // sin z-fighting entre nubes superpuestas
+      side:        THREE.FrontSide,
     });
-    this._cloudMesh = new THREE.Mesh(cloudGeo, cloudMat);
-    this._cloudMesh.rotation.x = -Math.PI / 2;  // plano horizontal
-    this._cloudMesh.position.y = 42;             // altura de las nubes
+
+    this._cloudMesh = new THREE.InstancedMesh(cloudGeo, cloudMat, CLOUD_COUNT);
+    // frustumCulled = false: el bounding box del InstancedMesh es el de la
+    // geometría base (1×1×1), no el de las instancias escaladas, por lo que
+    // Three.js lo descartaría erróneamente. Desactivar culling es seguro
+    // porque con solo 576 triángulos no penaliza la GPU.
+    this._cloudMesh.frustumCulled = false;
     scene.add(this._cloudMesh);
+
+    // Datos de cada instancia (posición world + escala + rotación Y)
+    this._cloudData   = [];
+    this._cloudSpread = CLOUD_SPREAD;
+    this._cloudDummy  = new THREE.Object3D();   // reutilizado cada frame
+
+    for (let i = 0; i < CLOUD_COUNT; i++) {
+      const x  = (Math.random() - 0.5) * CLOUD_SPREAD * 2;
+      const z  = (Math.random() - 0.5) * CLOUD_SPREAD * 2;
+      const sx = 8  + Math.random() * 10;   // ancho  8–18 u
+      const sy = 1.5 + Math.random() * 1.5; // alto   1.5–3 u
+      const sz = 6  + Math.random() * 8;    // prof   6–14 u
+      const ry = Math.random() * Math.PI;   // rotación Y 0–180°
+
+      this._cloudData.push({ x, y: CLOUD_Y, z, sx, sy, sz, ry });
+
+      this._cloudDummy.position.set(x, CLOUD_Y, z);
+      this._cloudDummy.scale.set(sx, sy, sz);
+      this._cloudDummy.rotation.y = ry;
+      this._cloudDummy.updateMatrix();
+      this._cloudMesh.setMatrixAt(i, this._cloudDummy.matrix);
+    }
+    this._cloudMesh.instanceMatrix.needsUpdate = true;
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -351,29 +392,61 @@ export class Environment {
     this._sunMesh.lookAt(camPos);
     this._moonMesh.lookAt(camPos);
 
-    // 7. Mover offset de nubes lentamente para simular viento
-    //    0.00008 por segundo → 1 ciclo completo en ~3.5 minutos reales
-    this._cloudTex.offset.x += 0.000080 * dt * 60;  // independiente de fps
-    this._cloudTex.offset.needsUpdate = true;
+    // 7. Mover nubes 3D con viento + wrap-around relativo a la cámara
+    //
+    //    Velocidad equivalente a la antigua textura 2D:
+    //      Old: offset.x += 0.0048 UV/s × 55 m/UV = 0.264 m/s
+    //    Mantenemos 0.264 u/s para que el ritmo visual sea idéntico.
+    //
+    //    Wrap: si c.x - camX supera ±CLOUD_SPREAD, la nube se tele-
+    //    transporta CLOUD_SPREAD*2 unidades al lado opuesto.
+    //    El mismo check en Z garantiza que las nubes también sigan al
+    //    jugador cuando se mueve lateralmente.
+    {
+      const WIND = 0.264;        // unidades/seg
+      const camX = camPos.x;
+      const camZ = camPos.z;
+      const wrap  = this._cloudSpread;
 
-    // 8. Las nubes siguen al jugador en XZ para no desaparecer al alejarse
-    this._cloudMesh.position.x = camPos.x;
-    this._cloudMesh.position.z = camPos.z;
+      for (let i = 0; i < this._cloudData.length; i++) {
+        const c = this._cloudData[i];
+
+        // Avanzar posición X (dirección del viento)
+        c.x += WIND * dt;
+
+        // Wrap-around en X respecto a la cámara
+        if (c.x - camX >  wrap) c.x -= wrap * 2;
+        if (c.x - camX < -wrap) c.x += wrap * 2;
+
+        // Wrap-around en Z respecto a la cámara (no es viento, es seguimiento)
+        if (c.z - camZ >  wrap) c.z -= wrap * 2;
+        if (c.z - camZ < -wrap) c.z += wrap * 2;
+
+        this._cloudDummy.position.set(c.x, c.y, c.z);
+        this._cloudDummy.scale.set(c.sx, c.sy, c.sz);
+        this._cloudDummy.rotation.y = c.ry;
+        this._cloudDummy.updateMatrix();
+        this._cloudMesh.setMatrixAt(i, this._cloudDummy.matrix);
+      }
+      this._cloudMesh.instanceMatrix.needsUpdate = true;
+    }
   }
 
   // ─────────────────────────────────────────────────────────────
   //  🌈  INTERPOLACIÓN DE FASES — corazón del ciclo día/noche
   //  ─────────────────────────────────────────────────────────────
-  //  ALGORITMO:
-  //  1. Buscamos entre qué dos fases consecutivas cae dayT.
-  //  2. Calculamos un alpha local [0,1] entre esas dos fases.
-  //  3. Interpolamos linealmente (lerp) cada componente de color
-  //     e intensidad.
+  //  ALGORITMO (sin cambios respecto a la versión anterior):
+  //  1. Buscamos entre qué dos stops consecutivos cae dayT.
+  //  2. Calculamos un alpha local [0,1] entre esos dos stops.
+  //  3. Interpolamos linealmente (lerp) cada componente.
   //
-  //  El ciclo es CIRCULAR: la última fase (midnight, t=0.75) debe
-  //  interpolar de vuelta a la primera (dawn, t=0.00/1.00).
-  //  Solución: al comparar contra midnight usamos t_next = 1.0
-  //  para que el tramo [0.75, 1.00] funcione correctamente.
+  //  El efecto "plateau" lo da el propio lerp: cuando dos stops
+  //  consecutivos tienen colores idénticos, alpha puede valer 0–1
+  //  y el resultado siempre es el mismo color → ningún cambio visual.
+  //
+  //  El ciclo es CIRCULAR: el último stop (t=0.925) interpola de
+  //  vuelta al stop 0 (t=0.000/1.000).
+  //  Solución: cuando phaseB.t < phaseA.t usamos tB = phaseB.t + 1.0.
   // ─────────────────────────────────────────────────────────────
 
   _interpolatePhase() {
@@ -441,12 +514,11 @@ export class Environment {
   //    midnight → 0.75   (medianoche)
   // ─────────────────────────────────────────────────────────────
   setTime(phase) {
-    // ── Mapa actualizado con los tiempos asimétricos ──────────────
-    //  Valores coinciden exactamente con los .t de PHASES:
-    //    dawn     → 0.000  (inicio del amanecer de 7.5%)
-    //    noon     → 0.075  (inicio del día de 50%)
-    //    dusk     → 0.575  (inicio del atardecer de 7.5%)
-    //    midnight → 0.650  (inicio de la noche de 35%)
+    // ── Mapa de teclas rápidas → dayT correspondiente ─────────────
+    //  dawn     → 0.000  inicio de la transición de amanecer
+    //  noon     → 0.075  inicio del plateau de día (azul estable)
+    //  dusk     → 0.575  inicio de la transición de atardecer
+    //  midnight → 0.650  inicio del plateau de noche (oscuro estable)
     const MAP = { dawn: 0.000, noon: 0.075, dusk: 0.575, midnight: 0.650 };
     if (phase in MAP) {
       this._dayT = MAP[phase];
