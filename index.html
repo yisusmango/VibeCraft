@@ -112,19 +112,14 @@
     VY: <span id="svy">0.00</span> &nbsp; Suelo: <span id="sg">—</span>
   </div>
 
-  <!-- Overlay de PAUSA (aparece al pulsar ESC durante el juego) -->
+  <!-- Overlay de PAUSA — Menú del Juego estilo Minecraft Java -->
   <div id="overlay">
-    <h1>VibeCraft</h1>
-    <div class="subtitle">▶ Clic para continuar ◀</div>
-    <div class="grid">
-      <div><span class="key">W A S D</span> &nbsp; Mover</div>
-      <div><span class="key">Espacio</span> &nbsp; Saltar</div>
-      <div><span class="key">Click Izq.</span> &nbsp; Destruir</div>
-      <div><span class="key">Click Der.</span> &nbsp; Colocar</div>
-      <div><span class="key">Ratón</span> &nbsp; Girar vista</div>
-      <div><span class="key">1 – 9</span> &nbsp; Seleccionar bloque</div>
+    <h1>Menú del Juego</h1>
+    <div class="mc-btn-col">
+      <button id="btn-resume"  class="mc-btn">Volver al juego</button>
+      <button id="btn-options" class="mc-btn mc-btn--disabled" disabled>Opciones…</button>
+      <button id="btn-quit"    class="mc-btn">Guardar y salir al menú principal</button>
     </div>
-    <div class="note">ESC para pausar</div>
   </div>
 
   <!-- Hotbar (generado por ui.js) -->
