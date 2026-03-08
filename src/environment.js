@@ -232,11 +232,12 @@ export class Environment {
     this._curCloud   = new THREE.Color();  // tinte interpolado de las nubes
 
     // ── Estado de las nubes (async) ────────────────────────────────
-    //  _cloudMesh es null hasta que clouds.png termina de cargar.
-    //  Todos los sistemas que lo usen deben hacer guard: if (!this._cloudMesh) return.
+    //  _cloudGroup / _cloudMatRef son null hasta que clouds.png carga.
+    //  Todos los sistemas deben hacer guard: if (!this._cloudGroup) return.
     //  _cloudWindX acumula el desplazamiento de viento (unidades mundo, eje X).
-    this._cloudMesh  = null;
-    this._cloudWindX = 0;
+    this._cloudGroup  = null;   // THREE.Group que contiene el tile 3×3
+    this._cloudMatRef = null;   // referencia al MeshBasicMaterial compartido
+    this._cloudWindX  = 0;
 
     this._buildCelestials(scene);
     this._buildClouds(scene);   // non-blocking: la malla se añade a la escena al cargar
@@ -318,7 +319,7 @@ export class Environment {
     //    el patrón de nubes es periódico (tileado implícito).
     //
     //  TAMAÑOS:
-    //    STRIDE      = 2   → muestreo cada 2 px → 128×128 = 16 384 muestras máx
+    //    STRIDE      = 4   → muestreo cada 4 px sobre 512 → 128×128 = 16 384 muestras máx
     //    VOXEL_SIZE  = 16  → cada píxel = cubo de 16×8×16 unidades mundo
     //    MAP_WORLD_SIZE = 128 × 16 = 2 048 unidades (capa de nubes 2 km "ancha")
     //
@@ -326,12 +327,12 @@ export class Environment {
     //    ~4 000–8 000 instancias típicas (según PNG) × 12 tri = ≤ 96 k tri
     //    en 1 sola draw call — 0 actualizaciones de matriz por frame.
 
-    const STRIDE      = 2;
+    const STRIDE      = 4;    // 512 / 4 = 128 muestras → SAMPLES y MAP_WORLD_SIZE idénticos
     const VOXEL_SIZE  = 16;
     const VOXEL_H     = 8;
     const CLOUD_Y     = 60;
-    const IMG_SIZE    = 256;
-    const SAMPLES     = IMG_SIZE / STRIDE;            // 128
+    const IMG_SIZE    = 512;  // resolución real de clouds.png
+    const SAMPLES     = IMG_SIZE / STRIDE;            // 128 (igual que antes)
     const MAP_WORLD_SIZE = SAMPLES * VOXEL_SIZE;      // 2048 unidades
 
     // Material compartido — igual que antes; _interpolatePhase() solo
@@ -390,32 +391,19 @@ export class Environment {
         return;
       }
 
-      // ── Segundo paso: crear InstancedMesh con recuento exacto ────
+      // ── Segundo paso: crear el InstancedMesh «plantilla» ─────────
       //  BoxGeometry(1,1,1) base; la escala por instancia da el tamaño real.
+      //  NO asignamos boundingSphere ni tocamos frustumCulled aquí: el sphere
+      //  de la geometría base (radio ≈ 0.87) no cubre las instancias escaladas,
+      //  y asignar uno al mesh plantilla NO se propaga a los clones del grid 3×3.
+      //  El culling correcto se desactiva chunk a chunk en el bucle de abajo.
       const cloudGeo  = new THREE.BoxGeometry(1, 1, 1);
       const cloudMesh = new THREE.InstancedMesh(cloudGeo, cloudMat, positions.length);
-      // frustumCulled = false: Three.js usa el bounding box de la geometría
-      // base (1×1×1) para culling, ignorando la escala de las instancias.
-      // Con VOXEL_SIZE=16, cada nube escalaría a 16×8×16 → sería descartada
-      // erróneamente. Desactivarlo es seguro: la GPU maneja los ≤96 k tri sin problema.
-      cloudMesh.frustumCulled = false;
-      // Segunda línea de defensa: Three.js puede recalcular el bounding sphere
-      // al mover mesh.position cada frame en update(), lo que reintroduce el
-      // test de frustum con el sphere pequeño de la geometría base (radio ≈ 0.87).
-      // Asignar un sphere infinito garantiza que el test SIEMPRE pase, sin coste
-      // de CPU ya que Three.js no intenta recomputarlo cuando está pre-asignado.
-      cloudMesh.geometry.boundingSphere = new THREE.Sphere(
-        new THREE.Vector3(0, 0, 0),
-        Infinity
-      );
 
-      // ── Tercer paso: calcular matrices (solo una vez, nunca más) ─
-      //  Las posiciones X/Z están en coordenadas locales del mesh.
-      //  La posición del mesh en world space la maneja update() cada frame.
+      // ── Tercer paso: calcular matrices UNA SOLA VEZ ──────────────
       const dummy = new THREE.Object3D();
-      dummy.rotation.set(0, 0, 0);   // sin rotación — estética vóxel alineada al eje
+      dummy.rotation.set(0, 0, 0);
       dummy.scale.set(VOXEL_SIZE, VOXEL_H, VOXEL_SIZE);
-
       for (let i = 0; i < positions.length; i++) {
         dummy.position.set(positions[i].x, 0, positions[i].z);
         dummy.updateMatrix();
@@ -423,20 +411,54 @@ export class Environment {
       }
       cloudMesh.instanceMatrix.needsUpdate = true;
 
-      // ── Cuarto paso: añadir a la escena ─────────────────────────
-      //  Posición inicial Y fija; X y Z se actualizan en update().
-      cloudMesh.position.y = CLOUD_Y;
-      scene.add(cloudMesh);
+      // ── Cuarto paso: grid 3×3 de tiles dentro de un Group ────────
+      //  PROBLEMA ANTERIOR: un único tile de 2048×2048 y moverlo con %
+      //  hacía visibles sus bordes cuando el jugador se acercaba a ellos.
+      //
+      //  SOLUCIÓN — 9 clones dispuestos en una cuadrícula 3×3:
+      //    tile (-1,-1)  tile (0,-1)  tile (+1,-1)
+      //    tile (-1, 0)  tile (0, 0)  ← tile central (debajo del jugador)
+      //    tile (-1,+1)  tile (0,+1)  tile (+1,+1)
+      //
+      //  El Group se desplaza en update() mediante «grid snapping»: el tile
+      //  central siempre está centrado bajo el jugador. Al alejarse más de
+      //  MAP_WORLD_SIZE/2 en cualquier eje, el grupo da un «salto» de exactamente
+      //  MAP_WORLD_SIZE → los tiles del borde opuesto se reciclan sin discontinuidad
+      //  visual porque el patrón de nubes es periódico (PNG tileado).
+      //
+      //  Con niebla far=120 u y los tiles a MAP_WORLD_SIZE/2 ≈ 1024 u del centro,
+      //  los bordes de los tiles exteriores quedan a 100% de niebla → invisibles.
+      const cloudGroup = new THREE.Group();
+      cloudGroup.position.y = CLOUD_Y;
 
-      // Exponer al resto de la instancia
-      this._cloudMesh       = cloudMesh;
-      this._cloudMapSize    = MAP_WORLD_SIZE;   // 2048 u — tamaño del ciclo de wrap
-      this._cloudY          = CLOUD_Y;
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          const chunk = cloudMesh.clone();
+          // frustumCulled = false por chunk: Three.js evalúa el bounding sphere
+          // de la geometría base (1×1×1, radio ≈ 0.87) ignorando la escala de las
+          // instancias y la posición del Group padre. El resultado es que la GPU
+          // descarta erróneamente tiles visibles al mirar hacia arriba o en ángulos
+          // extremos. Desactivar el culling en cada clon es la solución definitiva:
+          // los 9 tiles son geometría de skybox y siempre deben enviarse a la GPU;
+          // el coste es mínimo (≤96 k tri × 9 = 864 k tri máx, bien dentro del budget).
+          chunk.frustumCulled = false;
+          chunk.position.set(dx * MAP_WORLD_SIZE, 0, dz * MAP_WORLD_SIZE);
+          cloudGroup.add(chunk);
+        }
+      }
 
-      // Aplicar color actual de cielo por si ya llevamos un rato en marcha
-      cloudMesh.material.color.copy(this._curCloud);
+      scene.add(cloudGroup);
 
-      console.info(`[VibeCraft] Nubes cargadas: ${positions.length} vóxeles desde clouds.png`);
+      // ── Exponer referencias a la instancia ───────────────────────
+      this._cloudGroup   = cloudGroup;
+      this._cloudMatRef  = cloudMat;       // material compartido para tinte
+      this._cloudMapSize = MAP_WORLD_SIZE;
+      this._cloudY       = CLOUD_Y;
+
+      // Aplicar color actual por si ya llevamos tiempo corriendo
+      cloudMat.color.copy(this._curCloud);
+
+      console.info(`[VibeCraft] Nubes cargadas: ${positions.length} vóxeles × 9 tiles desde clouds.png`);
     };
 
     img.onerror = () => {
@@ -502,12 +524,27 @@ export class Environment {
     //  tilea), el salto no produce ninguna discontinuidad visual. ✓
     //
     //  Velocidad: 0.264 u/s (idéntica a las versiones anteriores).
-    if (this._cloudMesh) {
+    // 7. Mover capa de nubes con viento — grid snapping infinito
+    //
+    //  NUEVA ESTRATEGIA (0 actualizaciones de matriz/frame):
+    //  El Group de 9 tiles se desplaza usando «grid snapping»:
+    //
+    //    windX  = acumulador de viento (crece indefinidamente → sin overflow
+    //             en sesiones normales; JS usa float64 = 2^53 de precisión)
+    //    tileX  = índice del tile que debe estar debajo del jugador en X
+    //    tileZ  = ídem en Z (sin viento en Z → sigue al jugador directamente)
+    //
+    //  El Group se posiciona de modo que su tile central (0,0) quede bajo
+    //  el jugador + offset de viento. Cuando windX supera MAP_WORLD_SIZE/2,
+    //  tileX incrementa en 1 y el grupo «salta» exactamente MAP_WORLD_SIZE
+    //  → los tiles del borde izquierdo ahora están a la derecha, reciclados.
+    //  Como el PNG es periódico, el salto no produce discontinuidad visual.
+    if (this._cloudGroup) {
       this._cloudWindX += 0.264 * dt;
-      const wrapped = ((this._cloudWindX % this._cloudMapSize) + this._cloudMapSize)
-                      % this._cloudMapSize;
-      this._cloudMesh.position.x = camPos.x + wrapped;
-      this._cloudMesh.position.z = camPos.z;
+      const tileX = Math.round((camPos.x - this._cloudWindX) / this._cloudMapSize);
+      const tileZ = Math.round(camPos.z / this._cloudMapSize);
+      this._cloudGroup.position.x = this._cloudWindX + tileX * this._cloudMapSize;
+      this._cloudGroup.position.z = tileZ * this._cloudMapSize;
     }
   }
 
@@ -621,9 +658,9 @@ export class Environment {
     //    midnight → 0x1e2233  (gris-azul muy oscuro: noche sin luna llena)
     this._curCloud.copy(phaseA.cloud).lerp(phaseB.cloud, alpha);
     // null-guard: cloudMesh puede ser null mientras clouds.png no haya cargado
-    if (this._cloudMesh) {
-      this._cloudMesh.material.color.copy(this._curCloud);
-      this._cloudMesh.material.opacity = 0.82;
+    if (this._cloudMatRef) {
+      this._cloudMatRef.color.copy(this._curCloud);
+      this._cloudMatRef.opacity = 0.82;
     }
 
     // Interpolar intensidades de luces
