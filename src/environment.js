@@ -229,10 +229,17 @@ export class Environment {
     this._curFog     = new THREE.Color();
     this._curAmbient = new THREE.Color();
     this._curSun     = new THREE.Color();
-    this._curCloud   = new THREE.Color();  // ← NUEVO: tinte interpolado de las nubes
+    this._curCloud   = new THREE.Color();  // tinte interpolado de las nubes
+
+    // ── Estado de las nubes (async) ────────────────────────────────
+    //  _cloudMesh es null hasta que clouds.png termina de cargar.
+    //  Todos los sistemas que lo usen deben hacer guard: if (!this._cloudMesh) return.
+    //  _cloudWindX acumula el desplazamiento de viento (unidades mundo, eje X).
+    this._cloudMesh  = null;
+    this._cloudWindX = 0;
 
     this._buildCelestials(scene);
-    this._buildClouds(scene);
+    this._buildClouds(scene);   // non-blocking: la malla se añade a la escena al cargar
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -287,99 +294,143 @@ export class Environment {
   }
 
   _buildClouds(scene) {
-    // ── Nubes 3D — InstancedMesh con cuadrícula estricta ─────────
+    // ── Nubes 3D basadas en mapa de bits — InstancedMesh ─────────
     //
-    //  PROBLEMA ANTERIOR: posiciones aleatorias + rotación Y aleatoria
-    //  causaban solapamientos visuales frecuentes.
+    //  DISEÑO (al estilo Minecraft original):
     //
-    //  SOLUCIÓN — Sistema de cuadrícula (grid):
+    //  1. Cargamos `clouds.png` (256×256, blanco=nube, negro=vacío).
+    //  2. La leemos con getImageData() y muestreamos cada 2px →
+    //     cuadrícula de 128×128 = hasta 16.384 candidatos.
+    //  3. Solo los píxeles con canal R > 127 generan un vóxel de nube.
+    //  4. Creamos UN SOLO InstancedMesh con exactamente N instancias
+    //     (N = recuento exacto de píxeles blancos), sin índices vacíos.
+    //  5. Todas las instancias tienen escala uniforme (VOXEL_SIZE, VOXEL_H, VOXEL_SIZE)
+    //     y se posicionan en una cuadrícula centrada en (0,0) al nivel CLOUD_Y.
+    //     Las matrices se calculan UNA SOLA VEZ y nunca se actualizan.
     //
-    //  El área 200×200 se divide en celdas de CELL_SIZE×CELL_SIZE.
-    //  Con CELL_SIZE=20 obtenemos una cuadrícula de 10×10 = 100 celdas.
-    //  Cada celda puede generar UNA SOLA nube con probabilidad SPAWN_PROB,
-    //  centrada exactamente en el centro de la celda.
+    //  MOVIMIENTO DE VIENTO (update):
+    //    En lugar de mover N matrices individuales por frame, movemos el
+    //    Object3D raíz del InstancedMesh:
+    //      mesh.position.x = camPos.x + (windOffset % MAP_WORLD_SIZE)
+    //      mesh.position.z = camPos.z
+    //    Cuando windOffset cicla MAP_WORLD_SIZE unidades, el mesh salta
+    //    exactamente un mapa completo → sin discontinuidad visible porque
+    //    el patrón de nubes es periódico (tileado implícito).
     //
-    //  Garantía de no-solapamiento:
-    //    MAX_SX = MAX_SZ = 16  <  CELL_SIZE = 20
-    //  La nube más grande siempre tiene 2 unidades de margen libre
-    //  en cada eje respecto al borde de su celda → nunca invade
-    //  la celda vecina.
+    //  TAMAÑOS:
+    //    STRIDE      = 2   → muestreo cada 2 px → 128×128 = 16 384 muestras máx
+    //    VOXEL_SIZE  = 16  → cada píxel = cubo de 16×8×16 unidades mundo
+    //    MAP_WORLD_SIZE = 128 × 16 = 2 048 unidades (capa de nubes 2 km "ancha")
     //
-    //  Rotación Y = 0 para todas: los bloques quedan alineados con
-    //  los ejes del mundo, coherente con la estética vóxel.
-    //
-    //  Wrap-around y rendimiento: igual que la versión anterior.
-    //  CLOUD_SPREAD = 100 (radio del área = 200/2).
-    //  Máximo 100 instancias × 12 tri = 1200 tri en 1 draw call.
+    //  RENDIMIENTO:
+    //    ~4 000–8 000 instancias típicas (según PNG) × 12 tri = ≤ 96 k tri
+    //    en 1 sola draw call — 0 actualizaciones de matriz por frame.
 
-    const CELL_SIZE  = 20;
-    const GRID_COLS  = 10;          // 200 / CELL_SIZE
-    const GRID_ROWS  = 10;
-    const SPAWN_PROB = 0.30;        // probabilidad de nube por celda
-    const CLOUD_Y    = 42;
-    const MAX_SX     = 16;          // siempre < CELL_SIZE → sin solapamiento
-    const MAX_SZ     = 16;
+    const STRIDE      = 2;
+    const VOXEL_SIZE  = 16;
+    const VOXEL_H     = 8;
+    const CLOUD_Y     = 60;
+    const IMG_SIZE    = 256;
+    const SAMPLES     = IMG_SIZE / STRIDE;            // 128
+    const MAP_WORLD_SIZE = SAMPLES * VOXEL_SIZE;      // 2048 unidades
 
-    // ── Primer paso: construir el listado de nubes ────────────────
-    //  No podemos saber el recuento exacto antes de tirar los dados,
-    //  así que recogemos primero, construimos el InstancedMesh después.
-    const clouds = [];
-    for (let row = 0; row < GRID_ROWS; row++) {
-      for (let col = 0; col < GRID_COLS; col++) {
-        if (Math.random() > SPAWN_PROB) continue;
-
-        // Centro de la celda (origen del grid en -100,-100 para
-        // que el área cubierta sea simétrica respecto al mundo).
-        const cx = -100 + col * CELL_SIZE + CELL_SIZE * 0.5;
-        const cz = -100 + row * CELL_SIZE + CELL_SIZE * 0.5;
-
-        clouds.push({
-          x:  cx,
-          y:  CLOUD_Y,
-          z:  cz,
-          sx: 4 + Math.random() * (MAX_SX - 4),   // ancho  4–16 u
-          sy: 1.5 + Math.random() * 1.5,           // alto   1.5–3 u
-          sz: 4 + Math.random() * (MAX_SZ - 4),   // prof   4–16 u
-          // rotation.y = 0 implícito — sin rotación aleatoria
-        });
-      }
-    }
-
-    // ── Segundo paso: crear InstancedMesh con el recuento real ────
-    const count    = Math.max(1, clouds.length);  // mínimo 1 evita error WebGL
-    const cloudGeo = new THREE.BoxGeometry(1, 1, 1);
+    // Material compartido — igual que antes; _interpolatePhase() solo
+    // necesita acceder a cloudMat.color, lo haremos vía this._cloudMesh.material.
     const cloudMat = new THREE.MeshBasicMaterial({
-      color:       0xffffff,   // blanco base; _interpolatePhase() lo tinta
+      color:      0xffffff,
       transparent: true,
-      opacity:     0.82,
-      fog:         false,      // siempre visibles, sin desvanecerse con la niebla
-      depthWrite:  false,      // sin z-fighting entre nubes adyacentes
-      side:        THREE.FrontSide,
+      opacity:    0.82,
+      fog:        false,
+      depthWrite: false,
+      side:       THREE.FrontSide,
     });
 
-    this._cloudMesh       = new THREE.InstancedMesh(cloudGeo, cloudMat, count);
-    this._cloudMesh.count = clouds.length;   // Three.js r158: count es settable
-    // frustumCulled = false: el bounding box del InstancedMesh coincide con
-    // la BoxGeometry base (1×1×1), ignorando la escala de las instancias.
-    // Three.js descartaría erróneamente nubes escaladas a 16×3×16.
-    this._cloudMesh.frustumCulled = false;
-    scene.add(this._cloudMesh);
+    // ── Carga asíncrona ───────────────────────────────────────────
+    //  Usamos Image nativo en lugar de THREE.ImageLoader para acceder
+    //  a getImageData() directamente sin pasar por una textura GPU.
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
 
-    this._cloudData   = clouds;
-    this._cloudSpread = (GRID_COLS * CELL_SIZE) / 2;  // = 100
-    this._cloudDummy  = new THREE.Object3D();
+    img.onload = () => {
+      // ── Leer píxeles ────────────────────────────────────────────
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = IMG_SIZE;
+      const ctx    = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const { data } = ctx.getImageData(0, 0, IMG_SIZE, IMG_SIZE);
+      //  data: Uint8ClampedArray de largo IMG_SIZE × IMG_SIZE × 4 (RGBA)
+      //  Índice del canal R del píxel (col, row):
+      //    i = (row * IMG_SIZE + col) * 4
 
-    // Inicializar matrices (rotation = 0 por defecto en Object3D)
-    const dummy = this._cloudDummy;
-    dummy.rotation.set(0, 0, 0);   // garantía explícita: sin rotación Y
-    for (let i = 0; i < clouds.length; i++) {
-      const c = clouds[i];
-      dummy.position.set(c.x, c.y, c.z);
-      dummy.scale.set(c.sx, c.sy, c.sz);
-      dummy.updateMatrix();
-      this._cloudMesh.setMatrixAt(i, dummy.matrix);
-    }
-    this._cloudMesh.instanceMatrix.needsUpdate = true;
+      // ── Primer paso: recoger posiciones de todos los píxeles blancos ──
+      const positions = [];
+      for (let row = 0; row < IMG_SIZE; row += STRIDE) {
+        for (let col = 0; col < IMG_SIZE; col += STRIDE) {
+          const r = data[(row * IMG_SIZE + col) * 4];  // canal R (0-255)
+          if (r > 127) {
+            // Centrar la cuadrícula en (0,0): colIdx en [0, SAMPLES),
+            // restamos SAMPLES/2 para que el rango sea [-SAMPLES/2, +SAMPLES/2).
+            const colIdx = col / STRIDE;
+            const rowIdx = row / STRIDE;
+            positions.push({
+              x: (colIdx - SAMPLES / 2) * VOXEL_SIZE,
+              z: (rowIdx - SAMPLES / 2) * VOXEL_SIZE,
+            });
+          }
+        }
+      }
+
+      if (positions.length === 0) {
+        console.warn('[VibeCraft] clouds.png no produjo ningún vóxel blanco.');
+        return;
+      }
+
+      // ── Segundo paso: crear InstancedMesh con recuento exacto ────
+      //  BoxGeometry(1,1,1) base; la escala por instancia da el tamaño real.
+      const cloudGeo  = new THREE.BoxGeometry(1, 1, 1);
+      const cloudMesh = new THREE.InstancedMesh(cloudGeo, cloudMat, positions.length);
+      // frustumCulled = false: Three.js usa el bounding box de la geometría
+      // base (1×1×1) para culling, ignorando la escala de las instancias.
+      // Con VOXEL_SIZE=16, cada nube escalaría a 16×8×16 → sería descartada
+      // erróneamente. Desactivarlo es seguro: la GPU maneja los ≤96 k tri sin problema.
+      cloudMesh.frustumCulled = false;
+
+      // ── Tercer paso: calcular matrices (solo una vez, nunca más) ─
+      //  Las posiciones X/Z están en coordenadas locales del mesh.
+      //  La posición del mesh en world space la maneja update() cada frame.
+      const dummy = new THREE.Object3D();
+      dummy.rotation.set(0, 0, 0);   // sin rotación — estética vóxel alineada al eje
+      dummy.scale.set(VOXEL_SIZE, VOXEL_H, VOXEL_SIZE);
+
+      for (let i = 0; i < positions.length; i++) {
+        dummy.position.set(positions[i].x, 0, positions[i].z);
+        dummy.updateMatrix();
+        cloudMesh.setMatrixAt(i, dummy.matrix);
+      }
+      cloudMesh.instanceMatrix.needsUpdate = true;
+
+      // ── Cuarto paso: añadir a la escena ─────────────────────────
+      //  Posición inicial Y fija; X y Z se actualizan en update().
+      cloudMesh.position.y = CLOUD_Y;
+      scene.add(cloudMesh);
+
+      // Exponer al resto de la instancia
+      this._cloudMesh       = cloudMesh;
+      this._cloudMapSize    = MAP_WORLD_SIZE;   // 2048 u — tamaño del ciclo de wrap
+      this._cloudY          = CLOUD_Y;
+
+      // Aplicar color actual de cielo por si ya llevamos un rato en marcha
+      cloudMesh.material.color.copy(this._curCloud);
+
+      console.info(`[VibeCraft] Nubes cargadas: ${positions.length} vóxeles desde clouds.png`);
+    };
+
+    img.onerror = () => {
+      console.warn('[VibeCraft] No se pudo cargar clouds.png — las nubes no se mostrarán.');
+    };
+
+    // La ruta es relativa al documento HTML (raíz del proyecto)
+    img.src = './clouds.png';
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -420,40 +471,29 @@ export class Environment {
     this._sunMesh.lookAt(camPos);
     this._moonMesh.lookAt(camPos);
 
-    // 7. Mover nubes 3D con viento + wrap-around relativo a la cámara
+    // 7. Mover capa de nubes con viento — wrap-around del mapa completo
     //
-    //    WIND = 0.264 u/s — misma velocidad que la antigua textura 2D.
-    //    CLOUD_SPREAD = 100 (área de 200×200 / 2).
-    //    Wrap en X: avance del viento con teletransporte al lado opuesto.
-    //    Wrap en Z: seguimiento lateral del jugador sin viento.
-    //    rotation.y = 0 siempre → ya fijado en dummy antes del bucle.
-    {
-      const WIND  = 0.264;
-      const camX  = camPos.x;
-      const camZ  = camPos.z;
-      const wrap  = this._cloudSpread;    // 100
-      const dummy = this._cloudDummy;
-
-      // La rotación del dummy es 0 desde la construcción y nunca cambia.
-      // Fijarla fuera del bucle evita asignarla N veces por frame.
-      dummy.rotation.set(0, 0, 0);
-
-      for (let i = 0; i < this._cloudData.length; i++) {
-        const c = this._cloudData[i];
-
-        c.x += WIND * dt;
-
-        if (c.x - camX >  wrap) c.x -= wrap * 2;
-        if (c.x - camX < -wrap) c.x += wrap * 2;
-        if (c.z - camZ >  wrap) c.z -= wrap * 2;
-        if (c.z - camZ < -wrap) c.z += wrap * 2;
-
-        dummy.position.set(c.x, c.y, c.z);
-        dummy.scale.set(c.sx, c.sy, c.sz);
-        dummy.updateMatrix();
-        this._cloudMesh.setMatrixAt(i, dummy.matrix);
-      }
-      this._cloudMesh.instanceMatrix.needsUpdate = true;
+    //  NUEVA ESTRATEGIA (0 actualizaciones de matriz/frame):
+    //  Las matrices de todas las instancias se calcularon UNA SOLA VEZ en
+    //  _buildClouds() y jamás se tocan. En su lugar, movemos el mesh.position
+    //  del InstancedMesh completo cada frame:
+    //
+    //    windX  = acumulador de viento (crece indefinidamente)
+    //    wrapped = windX mod MAP_WORLD_SIZE  → [0, 2048)
+    //    mesh.position.x = camPos.x + wrapped
+    //    mesh.position.z = camPos.z
+    //
+    //  Al ciclar MAP_WORLD_SIZE unidades, el mesh salta exactamente 1 mapa
+    //  de ancho. Como el patrón de nubes es periódico (viene de un PNG que
+    //  tilea), el salto no produce ninguna discontinuidad visual. ✓
+    //
+    //  Velocidad: 0.264 u/s (idéntica a las versiones anteriores).
+    if (this._cloudMesh) {
+      this._cloudWindX += 0.264 * dt;
+      const wrapped = ((this._cloudWindX % this._cloudMapSize) + this._cloudMapSize)
+                      % this._cloudMapSize;
+      this._cloudMesh.position.x = camPos.x + wrapped;
+      this._cloudMesh.position.z = camPos.z;
     }
   }
 
@@ -566,17 +606,17 @@ export class Environment {
     //    dusk     → 0xff9966  (naranja encendido: reflejo del atardecer)
     //    midnight → 0x1e2233  (gris-azul muy oscuro: noche sin luna llena)
     this._curCloud.copy(phaseA.cloud).lerp(phaseB.cloud, alpha);
-    this._cloudMesh.material.color.copy(this._curCloud);
+    // null-guard: cloudMesh puede ser null mientras clouds.png no haya cargado
+    if (this._cloudMesh) {
+      this._cloudMesh.material.color.copy(this._curCloud);
+      this._cloudMesh.material.opacity = 0.82;
+    }
 
     // Interpolar intensidades de luces
     this._ambient.intensity = phaseA.ambientIntensity +
       (phaseB.ambientIntensity - phaseA.ambientIntensity) * alpha;
     this._sun.intensity = phaseA.sunIntensity +
       (phaseB.sunIntensity - phaseA.sunIntensity) * alpha;
-
-    // Opacidad de las nubes: fija en 0.78 — el color ya maneja la visibilidad nocturna.
-    // (Antes se hackeaba con opacity variable, pero eso causaba parpadeos al cambiar fase)
-    this._cloudMesh.material.opacity = 0.78;
   }
 
   // ─────────────────────────────────────────────────────────────
