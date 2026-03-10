@@ -91,6 +91,7 @@ sunLight.shadow.camera.top         =  50;
 sunLight.shadow.camera.bottom      = -50;
 sunLight.shadow.bias               = -0.001;
 scene.add(sunLight);
+scene.add(sunLight.target);  // target debe estar en escena para posicionarse dinámicamente
 
 // ═══════════════════════════════════════════════════════════════
 //  🎮  POINTER LOCK CONTROLS
