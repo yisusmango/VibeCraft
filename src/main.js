@@ -16,7 +16,7 @@ import * as THREE from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 
 import { CONFIG }                           from './config.js';
-import { initWorld, generateDefaultWorld, blockMap,
+import { initWorld, generateDefaultWorld, blockMap, hasBlock,
          serializeWorld, deserializeWorld }  from './world.js';
 import { initPlayer, updatePhysics, player } from './player.js';
 import { initInteraction, updateRaycaster, getTargetBlock } from './interaction.js';
@@ -209,6 +209,7 @@ async function renderWorldsList() {
       try {
         const data = await loadWorld(id);
         deserializeWorld(data.blocks ?? []);
+        spawnPlayerSafe();
         await saveWorld(id, currentWorldName, data.blocks ?? []);
       } catch (err) {
         console.error('[VibeCraft] Error al cargar mundo:', err);
@@ -257,6 +258,20 @@ async function renderWorldsList() {
       }
     }
   });
+}
+
+
+// ── Spawn seguro: coloca al jugador sobre el terreno ─────────────
+//  Busca desde y=32 hacia abajo el primer bloque sólido en el centro
+//  del mundo, y coloca al jugador 2 unidades por encima para que
+//  caiga suavemente sobre la superficie en lugar de aparecer bajo tierra.
+function spawnPlayerSafe() {
+  const cx = Math.floor(CONFIG.WORLD_SIZE / 2);
+  const cz = Math.floor(CONFIG.WORLD_SIZE / 2);
+  let y = 32;
+  while (y > 0 && !hasBlock(cx, y, cz)) y--;
+  player.position.set(cx + 0.5, y + 2.0, cz + 0.5);
+  player.velocity.set(0, 0, 0);
 }
 
 // ── btn-singleplayer ──────────────────────────────────────────────
@@ -346,6 +361,7 @@ document.getElementById('btn-world-new').addEventListener('click', async () => {
 
   deserializeWorld([]);
   generateDefaultWorld();
+  spawnPlayerSafe();
 
   try {
     await saveWorld(id, name, serializeWorld());
