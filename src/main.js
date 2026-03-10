@@ -16,7 +16,7 @@ import * as THREE from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 
 import { CONFIG }                           from './config.js';
-import { initWorld, generateDefaultWorld, blockMap, hasBlock,
+import { initWorld, updateChunks, resetChunks, blockMap, hasBlock,
          serializeWorld, deserializeWorld }  from './world.js';
 import { initPlayer, updatePhysics, player } from './player.js';
 import { initInteraction, updateRaycaster, getTargetBlock } from './interaction.js';
@@ -266,11 +266,14 @@ async function renderWorldsList() {
 //  del mundo, y coloca al jugador 2 unidades por encima para que
 //  caiga suavemente sobre la superficie en lugar de aparecer bajo tierra.
 function spawnPlayerSafe() {
-  const cx = Math.floor(CONFIG.WORLD_SIZE / 2);
-  const cz = Math.floor(CONFIG.WORLD_SIZE / 2);
-  let y = 32;
-  while (y > 0 && !hasBlock(cx, y, cz)) y--;
-  player.position.set(cx + 0.5, y + 2.0, cz + 0.5);
+  // Busca terreno en las coordenadas XZ actuales del jugador.
+  // Para mundos nuevos: player.position ya apunta al centro del
+  // chunk de spawn antes de llamar a esta función.
+  const sx = Math.floor(player.position.x);
+  const sz = Math.floor(player.position.z);
+  let y = 64;
+  while (y > 0 && !hasBlock(sx, y, sz)) y--;
+  player.position.set(sx + 0.5, y + 2.0, sz + 0.5);
   player.velocity.set(0, 0, 0);
 }
 
@@ -359,8 +362,19 @@ document.getElementById('btn-world-new').addEventListener('click', async () => {
   currentWorldId   = id;
   currentWorldName = name;
 
+  // Posicionar al jugador en el centro del chunk de spawn (0,0)
+  // ANTES de generar terreno, para que updateChunks sepa qué chunks cargar
+  // y spawnPlayerSafe pueda buscar suelo en esas coordenadas.
+  player.position.set(
+    CONFIG.CHUNK_SIZE / 2 + 0.5,
+    64,
+    CONFIG.CHUNK_SIZE / 2 + 0.5,
+  );
+  player.velocity.set(0, 0, 0);
+
   deserializeWorld([]);
-  generateDefaultWorld();
+  resetChunks();
+  updateChunks(player.position.x, player.position.z);
   spawnPlayerSafe();
 
   try {
@@ -507,6 +521,7 @@ function animate() {
     //  siguen corriendo con normalidad.
     if (controls.isLocked) {
       updatePhysics(dt, camera, controls);
+      updateChunks(player.position.x, player.position.z);
       updateRaycaster(camera, controls);
     }
     updateHUD(player, blockMap, getTargetBlock());
