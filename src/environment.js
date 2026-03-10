@@ -74,7 +74,10 @@ const _nightCloud   = new THREE.Color(0x1e2233);
 
 // Vector reutilizable para leer la posición mundial de la cámara sin
 // instanciar un objeto nuevo en cada frame (evita presión sobre el GC).
-const _worldPos = new THREE.Vector3();
+const _worldPos  = new THREE.Vector3();
+const _sunWorld  = new THREE.Vector3();
+const _moonWorld = new THREE.Vector3();
+const _lightDir  = new THREE.Vector3();
 
 const PHASE_ORDER = [
 
@@ -549,6 +552,19 @@ export class Environment {
       this._cloudGroup.position.x = this._cloudWindX + tileX * this._cloudMapSize;
       this._cloudGroup.position.z = tileZ * this._cloudMapSize;
     }
+
+    // 8. Actualizar Luz Direccional (Sombras Dinámicas y seguimiento del jugador)
+    //    El astro dominante es el que esté más alto en el cielo (Y mayor).
+    //    La luz se coloca 100 u del jugador en esa dirección y apunta hacia él,
+    //    garantizando que las sombras siempre rodeen al jugador sin importar
+    //    cuánto se haya desplazado en el mundo.
+    this._sunMesh.getWorldPosition(_sunWorld);
+    this._moonMesh.getWorldPosition(_moonWorld);
+    const activeAstro = _sunWorld.y > _moonWorld.y ? _sunWorld : _moonWorld;
+    _lightDir.subVectors(activeAstro, camPos).normalize();
+    this._sun.position.copy(camPos).addScaledVector(_lightDir, 100);
+    this._sun.target.position.copy(camPos);
+    this._sun.shadow.camera.updateProjectionMatrix();
   }
 
   // ─────────────────────────────────────────────────────────────
