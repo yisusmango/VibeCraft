@@ -19,15 +19,15 @@ export const CONFIG = Object.freeze({
   //  RENDER_DISTANCE : radio en chunks alrededor del jugador.
   //                    2 → área visible de 5×5 chunks = 80×80 bloques.
   CHUNK_SIZE     : 16,
-  RENDER_DISTANCE: 2,
+  RENDER_DISTANCE: 4,
 
   // ── Compatibilidad con player.js ─────────────────────────────
   //  WORLD_SIZE ya NO controla la generación de terreno.
   //  Se retiene ÚNICAMENTE para la barrera de seguridad en player.js
   //  (respawn si el jugador cae a Y < −20).
-  //  Valor = CHUNK_SIZE × (RENDER_DISTANCE×2 + 1) = 16 × 5 = 80
-  //  → el centro de respawn queda en (40, 32, 40).
-  WORLD_SIZE   : 80,
+  //  Valor = CHUNK_SIZE × (RENDER_DISTANCE×2 + 1) = 16 × 9 = 144
+  //  → el centro de respawn queda en (72, 32, 72).
+  WORLD_SIZE   : 144,
 
   // ── Interacción ─────────────────────────────────────────────
   MAX_REACH    : 5.0,
