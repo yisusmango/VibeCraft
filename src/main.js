@@ -43,10 +43,11 @@ document.body.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87CEEB);        // azul cielo
 const drawDistance = CONFIG.RENDER_DISTANCE * CONFIG.CHUNK_SIZE;
-// Niebla dinámica: cubre exactamente el borde del último chunk renderizado.
-// near = 40% de la distancia máxima → fade suave desde la mitad de la vista.
-// far  = drawDistance - 4           → 100% opaca 4 bloques antes del límite.
-scene.fog        = new THREE.Fog(0x87CEEB, drawDistance * 0.4, drawDistance - 4);
+// Niebla dinámica con límite inferior absoluto:
+// fogNear mínimo 62 → la niebla nunca alcanza las nubes del cénit (Y=60)
+// independientemente de cuán pequeño sea RENDER_DISTANCE.
+const fogNear = Math.max(drawDistance * 0.4, 62);
+scene.fog        = new THREE.Fog(0x87CEEB, fogNear, drawDistance - 4);
 // ── Calibración niebla + nubes ───────────────────────────────────
 //  CLOUD_Y=60, cámara en y≈3 → distancia vertical a la capa = ~57 u.
 //
