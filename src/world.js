@@ -1,25 +1,39 @@
 // ═══════════════════════════════════════════════════════════════
-//  src/world.js  —  VibeCraft · Fase 3: Sistema de Chunks
+//  src/world.js  —  VibeCraft · Fase 4: Chunk-Level InstancedMesh
 //
 //  ARQUITECTURA DE ESTA FASE:
 //  ─────────────────────────────────────────────────────────────
-//  ANTES  │  generateDefaultWorld() → terreno fijo 32×32
-//         │  El mundo entero existía en memoria desde el inicio.
+//  ANTES  │  Un array global _instancedMeshes contenía los
+//         │  InstancedMeshes de TODO el mundo visible.
+//         │  rebuildWorldMeshes() iteraba O(blockMap.size) bloques
+//         │  cada vez que se cargaba cualquier chunk.
+//         │  Con RENDER_DISTANCE=6 → 13×13=169 chunks activos
+//         │  → hasta 169 × ~700 bloques = ~118.000 iteraciones
+//         │  por rebuild. Causa de los stutters.
 //
-//  AHORA  │  updateChunks(playerX, playerZ) — llamar cada frame
-//         │  Carga chunks nuevos dentro de RENDER_DISTANCE.
-//         │  Descarga chunks que quedan fuera del rango.
-//         │  La carga es incremental: solo chunks no generados aún.
+//  AHORA  │  _chunkMeshes: Map<"cx,cz", { ims, torches }>
+//         │  Cada entrada almacena los InstancedMeshes de UN chunk.
+//         │  buildChunkMesh(cx, cz) itera solo los 16×16×64 = 16.384
+//         │  posibles posiciones de ese chunk → ~100× más rápido.
+//         │  updateChunks() genera y meshea 1 chunk por frame →
+//         │  trabajo perfectamente repartido, sin spikes de CPU.
 //
-//  CHUNK KEY: "cx,cz"  donde cx = floor(x / CHUNK_SIZE)
-//             Un chunk cubre bloques [cx*CS .. (cx+1)*CS-1] en X/Z.
+//  GESTIÓN DE TORCHES:
+//    Las antorchas siguen siendo THREE.Mesh individuales añadidas
+//    a escena en addBlock(). buildChunkMesh() las recoge en
+//    entry.torches para poder controlar su visibilidad cuando
+//    el chunk se descarga visualmente.
 //
-//  NOISE2D:
-//    Instancia única por mundo (resetChunks() la regenera).
-//    Garantiza terreno seamless entre chunks adyacentes.
-//    Mismas coords mundiales → mismos valores de ruido.
+//  DESCARGA VISUAL:
+//    Cuando un chunk sale del radio de render, sus InstancedMeshes
+//    se retiran de escena y se libera su memoria GPU (.dispose()).
+//    Los bloques en blockMap NO se eliminan: persisten en RAM para
+//    ser meshados de nuevo si el jugador regresa al área.
+//    Las antorchas se ocultan (visible=false) sin destruirse.
 //
-//  InstancedMesh + Occlusion Culling: sin cambios vs fase anterior.
+//  OCCLUSION CULLING:
+//    isBlockOccluded() consulta blockMap globalmente, por lo que
+//    funciona correctamente con vecinos en chunks adyacentes.
 // ═══════════════════════════════════════════════════════════════
 
 import * as THREE from 'three';
@@ -155,8 +169,22 @@ export const blockMap = new Map();
 const TRANSPARENT_TYPES = new Set(['glass', 'leaves', 'torch']);
 const INSTANCED_TYPES   = ['grass', 'dirt', 'stone', 'wood', 'leaves', 'sand', 'glass'];
 
-let _instancedMeshes = [];
+// ── Chunk-Level Mesh Storage ──────────────────────────────────────
+//  Key  : "cx,cz"
+//  Value: { ims: THREE.InstancedMesh[], torches: THREE.Mesh[] }
+//    ims     → InstancedMeshes de bloques sólidos (se crean/destruyen
+//               en buildChunkMesh)
+//    torches → referencias a los THREE.Mesh de antorchas ya existentes
+//               en escena (no se destruyen aquí, solo se muestran/ocultan)
+const _chunkMeshes = new Map();
+
 const _matrix = new THREE.Matrix4();
+
+// Altura máxima de escaneo para buildChunkMesh.
+// La generación de terreno alcanza maxY ≤ 27; 64 da margen para
+// construcciones del jugador sin ser prohibitivo (16×16×64 = 16.384
+// posiciones por chunk, la mayoría vacías → Map.get miss muy rápido).
+const Y_SCAN_MAX = 64;
 
 const blockKey = (x, y, z) => `${x},${y},${z}`;
 const chunkKey = (cx, cz)   => `${cx},${cz}`;
@@ -174,10 +202,10 @@ export function getBlockType(x, y, z) {
 //  ─────────────────────────────────────────────────────────────
 //  _noise2D          — instancia Simplex compartida por todos los
 //                      chunks del mundo. Nueva instancia = nuevo terreno.
-//  _generatedChunks  — Set<"cx,cz"> de chunks ya generados.
-//                      Evita regenerar el mismo chunk dos veces.
-//  _lastChunkX/Z     — chunk del jugador en el frame anterior.
-//                      updateChunks() es no-op si no cambia.
+//  _generatedChunks  — Set<"cx,cz"> de chunks cuyo terreno ya fue
+//                      insertado en blockMap. Evita regenerar.
+//  _lastChunkX/Z     — chunk del jugador según el último frame en que
+//                      updateChunks() se ejecutó (usado por helpers).
 // ═══════════════════════════════════════════════════════════════
 
 let _noise2D           = createNoise2D();
@@ -187,12 +215,14 @@ let _lastChunkZ        = null;
 
 /**
  * resetChunks — Reinicia el sistema de chunks para un mundo nuevo.
- *   • Crea una nueva instancia de noise2D (semilla aleatoria).
- *   • Vacía el registro de chunks generados.
- *   • Fuerza recalculo completo en el próximo updateChunks().
+ *   • Nueva semilla de ruido → terreno diferente.
+ *   • Descarga todas las mallas visuales y limpia los Sets de estado.
+ *   • El siguiente updateChunks() regenerará el terreno desde cero.
  */
 export function resetChunks() {
   _noise2D = createNoise2D();
+  // Descargar y liberar todas las mallas visuales
+  for (const [key, entry] of _chunkMeshes) _unloadChunkVisuals(key, entry);
   _generatedChunks.clear();
   _lastChunkX = null;
   _lastChunkZ = null;
@@ -200,6 +230,9 @@ export function resetChunks() {
 
 // ═══════════════════════════════════════════════════════════════
 //  OCCLUSION CULLING
+//  ─────────────────────────────────────────────────────────────
+//  Consulta blockMap globalmente → funciona correctamente con
+//  vecinos en chunks adyacentes sin ningún cambio adicional.
 // ═══════════════════════════════════════════════════════════════
 
 const NEIGHBOR_OFFSETS = [
@@ -217,92 +250,162 @@ function isBlockOccluded(x, y, z) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  rebuildWorldMeshes
+//  _unloadChunkVisuals — INTERNO
+//  ─────────────────────────────────────────────────────────────
+//  Retira un chunk del grafo de escena y libera memoria GPU.
+//  • InstancedMeshes: removeFromParent() + dispose() → GPU liberada.
+//  • Torch meshes: visible=false (no se destruyen, su ciclo de vida
+//    pertenece a addBlock/removeBlock).
+//  • Elimina la entrada de _chunkMeshes.
 // ═══════════════════════════════════════════════════════════════
 
-export function rebuildWorldMeshes() {
-  if (!_scene) return;
-
-  for (const im of _instancedMeshes) {
-    _scene.remove(im);
+function _unloadChunkVisuals(key, entry) {
+  for (const im of entry.ims) {
+    im.removeFromParent();
     im.dispose();
   }
-  _instancedMeshes = [];
+  for (const tm of entry.torches) {
+    tm.visible = false;
+    if (tm.userData.pointLight) tm.userData.pointLight.visible = false;
+  }
+  _chunkMeshes.delete(key);
+}
 
-  const counts = Object.fromEntries(INSTANCED_TYPES.map(t => [t, 0]));
-  for (const data of blockMap.values()) {
-    // Distancia al chunk del jugador (para culling y visibilidad)
-    const bCx = Math.floor(data.x / CONFIG.CHUNK_SIZE);
-    const bCz = Math.floor(data.z / CONFIG.CHUNK_SIZE);
-    const isOutOfRange = _lastChunkX !== null && (
-      Math.abs(bCx - _lastChunkX) > CONFIG.RENDER_DISTANCE ||
-      Math.abs(bCz - _lastChunkZ) > CONFIG.RENDER_DISTANCE
-    );
+// ═══════════════════════════════════════════════════════════════
+//  buildChunkMesh — NÚCLEO DE LA FASE 4
+//  ─────────────────────────────────────────────────────────────
+//  Construye (o reconstruye) los InstancedMeshes de UN chunk.
+//
+//  COMPLEJIDAD: O(CS × CS × Y_SCAN_MAX)
+//    = O(16 × 16 × 64) = O(16.384) por chunk.
+//    Cada iteración es un Map.get → O(1) hash lookup.
+//    Comparado con el O(blockMap.size) global previo:
+//    con 169 chunks cargados × ~700 bloques = ~118.000 → 7× más rápido.
+//
+//  ALGORITMO:
+//    1. Descartar InstancedMeshes anteriores de este chunk (si existen).
+//    2. Pasar 1 (conteo): iterar coordenadas del chunk, contar bloques
+//       visibles por tipo (excluyendo occluded).
+//    3. Crear un InstancedMesh por tipo con el count exacto.
+//    4. Pasar 2 (fill): mismo recorrido → setMatrixAt + userData.instances.
+//    5. Recoger referencias a torch meshes para la gestión de visibilidad.
+//    6. Guardar { ims, torches } en _chunkMeshes.
+// ═══════════════════════════════════════════════════════════════
 
-    // Mallas individuales (antorchas): alternar visibilidad en lugar
-    // de incluirlas en el InstancedMesh. Esto evita que queden
-    // flotando cuando su chunk sale del radio de render.
-    if (data.mesh) {
-      data.mesh.visible = !isOutOfRange;
-      if (data.mesh.userData.pointLight) {
-        data.mesh.userData.pointLight.visible = !isOutOfRange;
-      }
-      continue;  // las mallas individuales no entran en InstancedMesh
+export function buildChunkMesh(cx, cz) {
+  if (!_scene) return;
+
+  const key    = chunkKey(cx, cz);
+  const CS     = CONFIG.CHUNK_SIZE;
+  const xStart = cx * CS;
+  const xEnd   = xStart + CS;
+  const zStart = cz * CS;
+  const zEnd   = zStart + CS;
+
+  // ── 1. Limpiar mallas anteriores de este chunk ───────────────────
+  //  Solo los InstancedMeshes se destruyen; las torch meshes se
+  //  dejan en escena (se actualizarán su visibilidad más abajo).
+  if (_chunkMeshes.has(key)) {
+    const old = _chunkMeshes.get(key);
+    for (const im of old.ims) {
+      im.removeFromParent();
+      im.dispose();
     }
-
-    if (!INSTANCED_TYPES.includes(data.type)) continue;
-    if (isOutOfRange) continue;
-    if (isBlockOccluded(data.x, data.y, data.z)) continue;
-    counts[data.type]++;
+    _chunkMeshes.delete(key);
   }
 
+  // ── 2. Pasar 1: contar instancias visibles por tipo ──────────────
+  const counts  = Object.fromEntries(INSTANCED_TYPES.map(t => [t, 0]));
+  const torches = [];
+
+  for (let x = xStart; x < xEnd; x++) {
+    for (let z = zStart; z < zEnd; z++) {
+      for (let y = 0; y <= Y_SCAN_MAX; y++) {
+        const data = blockMap.get(blockKey(x, y, z));
+        if (!data) continue;
+
+        if (data.mesh) {
+          // Antorcha: asegurar visible y recoger referencia
+          data.mesh.visible = true;
+          if (data.mesh.userData.pointLight)
+            data.mesh.userData.pointLight.visible = true;
+          torches.push(data.mesh);
+          continue;
+        }
+
+        if (!INSTANCED_TYPES.includes(data.type)) continue;
+        if (isBlockOccluded(x, y, z)) continue;
+        counts[data.type]++;
+      }
+    }
+  }
+
+  // ── 3. Crear InstancedMeshes con capacidad exacta ─────────────────
+  const ims         = [];
   const meshByType  = {};
   const indexByType = {};
+
   for (const type of INSTANCED_TYPES) {
     if (counts[type] === 0) continue;
     const im = new THREE.InstancedMesh(BLOCK_GEO, MATERIALS[type], counts[type]);
-    im.castShadow = im.receiveShadow = true;
+    im.castShadow    = true;
+    im.receiveShadow = true;
     im.userData.instances = new Array(counts[type]);
     meshByType[type]  = im;
     indexByType[type] = 0;
     _scene.add(im);
-    _instancedMeshes.push(im);
+    ims.push(im);
   }
 
-  for (const data of blockMap.values()) {
-    if (data.mesh) continue;  // antorchas ya gestionadas arriba
-    if (!INSTANCED_TYPES.includes(data.type)) continue;
-    const bCx = Math.floor(data.x / CONFIG.CHUNK_SIZE);
-    const bCz = Math.floor(data.z / CONFIG.CHUNK_SIZE);
-    if (_lastChunkX !== null && (
-      Math.abs(bCx - _lastChunkX) > CONFIG.RENDER_DISTANCE ||
-      Math.abs(bCz - _lastChunkZ) > CONFIG.RENDER_DISTANCE
-    )) continue;
-    if (isBlockOccluded(data.x, data.y, data.z)) continue;
-    const im  = meshByType[data.type];
-    const idx = indexByType[data.type]++;
-    _matrix.setPosition(data.x, data.y, data.z);
-    im.setMatrixAt(idx, _matrix);
-    im.userData.instances[idx] = { x: data.x, y: data.y, z: data.z, type: data.type };
+  // ── 4. Pasar 2: rellenar matrices e índices de instancia ──────────
+  for (let x = xStart; x < xEnd; x++) {
+    for (let z = zStart; z < zEnd; z++) {
+      for (let y = 0; y <= Y_SCAN_MAX; y++) {
+        const data = blockMap.get(blockKey(x, y, z));
+        if (!data || data.mesh) continue;
+        if (!INSTANCED_TYPES.includes(data.type)) continue;
+        if (isBlockOccluded(x, y, z)) continue;
+
+        const im  = meshByType[data.type];
+        const idx = indexByType[data.type]++;
+        _matrix.setPosition(x, y, z);
+        im.setMatrixAt(idx, _matrix);
+        im.userData.instances[idx] = { x, y, z, type: data.type };
+      }
+    }
   }
 
-  for (const im of _instancedMeshes) im.instanceMatrix.needsUpdate = true;
+  // ── 5. Confirmar matrices en GPU ──────────────────────────────────
+  for (const im of ims) im.instanceMatrix.needsUpdate = true;
+
+  // ── 6. Registrar la entrada en el mapa de mallas ──────────────────
+  _chunkMeshes.set(key, { ims, torches });
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  getBlockMeshes
+//  ─────────────────────────────────────────────────────────────
+//  Devuelve todos los objetos raycasterables: InstancedMeshes de
+//  chunks cargados + Mesh individuales de antorchas visibles.
+//  interaction.js llama esto cada frame para intersectObjects().
 // ═══════════════════════════════════════════════════════════════
 
 export function getBlockMeshes() {
-  const torchMeshes = [];
-  for (const data of blockMap.values()) {
-    if (data.mesh) torchMeshes.push(data.mesh);
+  const result = [];
+  for (const entry of _chunkMeshes.values()) {
+    for (const im of entry.ims)     result.push(im);
+    for (const tm of entry.torches) result.push(tm);
   }
-  return [..._instancedMeshes, ...torchMeshes];
+  return result;
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  addBlock
+//  ─────────────────────────────────────────────────────────────
+//  Tras insertar el bloque en blockMap, reconstruye solo la malla
+//  del chunk afectado en lugar de todo el mundo.
+//  { rebuild: false } omite buildChunkMesh para operaciones en masa
+//  (generación de terreno, deserialización).
 // ═══════════════════════════════════════════════════════════════
 
 export function addBlock(x, y, z, type = 'grass', normal = null, { rebuild = true } = {}) {
@@ -352,13 +455,16 @@ export function addBlock(x, y, z, type = 'grass', normal = null, { rebuild = tru
 
     blockMap.set(key, {
       x, y, z,
-      type  : 'torch',
-      normal: normal ? { x: normal.x, y: normal.y, z: normal.z } : null,
+      type   : 'torch',
+      normal : normal ? { x: normal.x, y: normal.y, z: normal.z } : null,
       isSolid: false,
       mesh,
     });
 
-    if (rebuild) rebuildWorldMeshes();
+    if (rebuild) {
+      const CS = CONFIG.CHUNK_SIZE;
+      buildChunkMesh(Math.floor(x / CS), Math.floor(z / CS));
+    }
     return;
   }
 
@@ -369,11 +475,17 @@ export function addBlock(x, y, z, type = 'grass', normal = null, { rebuild = tru
     isSolid: !TRANSPARENT_TYPES.has(type),
   });
 
-  if (rebuild) rebuildWorldMeshes();
+  if (rebuild) {
+    const CS = CONFIG.CHUNK_SIZE;
+    buildChunkMesh(Math.floor(x / CS), Math.floor(z / CS));
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  removeBlock
+//  ─────────────────────────────────────────────────────────────
+//  Elimina el bloque de blockMap, destruye recursos de antorcha
+//  si corresponde, y reconstruye la malla del chunk afectado.
 // ═══════════════════════════════════════════════════════════════
 
 export function removeBlock(x, y, z, { rebuild = true } = {}) {
@@ -391,66 +503,89 @@ export function removeBlock(x, y, z, { rebuild = true } = {}) {
   }
 
   blockMap.delete(blockKey(x, y, z));
-  if (rebuild) rebuildWorldMeshes();
+
+  if (rebuild) {
+    const CS = CONFIG.CHUNK_SIZE;
+    buildChunkMesh(Math.floor(x / CS), Math.floor(z / CS));
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  updateChunks — Motor de streaming de terreno
+//  updateChunks — Motor de streaming de terreno (Fase 4)
 //  ─────────────────────────────────────────────────────────────
-//  Llamar cada frame desde animate() pasando la posición del jugador.
+//  Llamar cada frame desde animate() con la posición del jugador.
 //
-//  ALGORITMO:
-//    1. Calcular chunk actual del jugador (cx, cz).
-//    2. Si no cambió de chunk → return (no-op).
-//    3. Construir Set de chunks "deseados" dentro del radio RD.
-//    4. Para cada chunk deseado NO generado → _generateChunk().
-//    5. Para cada bloque en blockMap cuyo chunk quede fuera del
-//       radio → removeBlock({rebuild:false}) + eliminar de
-//       _generatedChunks (para poder regenerar al volver).
-//    6. Un único rebuildWorldMeshes() al final.
+//  ALGORITMO (3 etapas, todas O(pequeño) por frame):
+//
+//  ETAPA 1 — Descarga visual:
+//    Iterar _chunkMeshes (solo chunks con malla, max 169 entradas).
+//    Si un chunk supera RENDER_DISTANCE → _unloadChunkVisuals().
+//    Los bloques en blockMap NO se tocan.
+//    Coste: O(chunks_con_malla) ≤ O(169).
+//
+//  ETAPA 2 — Selección radial del próximo chunk:
+//    Escanear el área (2×RD+1)² = 169 posiciones, recoger las que
+//    no tienen malla aún. Ordenar por distSq → chunk más cercano
+//    primero (sin "efecto máquina de escribir").
+//    Coste: O(169 log 169) ≈ O(169×7) por frame. Despreciable.
+//
+//  ETAPA 3 — 1 chunk por frame:
+//    Si el chunk no tiene terreno → _generateChunk() (rellena blockMap).
+//    buildChunkMesh() → construye solo la geometría de ese chunk.
+//    Coste por frame: O(16×16×64) ≈ O(16.384). Sin stutter.
 // ═══════════════════════════════════════════════════════════════
 
 export function updateChunks(playerX, playerZ) {
   const CS = CONFIG.CHUNK_SIZE;
   const RD = CONFIG.RENDER_DISTANCE;
 
-  // 1. Chunk actual del jugador
   const cx = Math.floor(playerX / CS);
   const cz = Math.floor(playerZ / CS);
-
-  // 2. Early-exit si no cambió de chunk
-  if (cx === _lastChunkX && cz === _lastChunkZ) return;
   _lastChunkX = cx;
   _lastChunkZ = cz;
 
-  // 3. Conjunto de chunks deseados
-  const desiredChunks = new Set();
-  for (let dx = -RD; dx <= RD; dx++) {
-    for (let dz = -RD; dz <= RD; dz++) {
-      desiredChunks.add(chunkKey(cx + dx, cz + dz));
+  // ── Etapa 1: descarga visual de chunks fuera de rango ────────────
+  //  Iterar sobre una copia de las claves para poder mutar _chunkMeshes
+  //  de forma segura dentro del bucle.
+  for (const [key, entry] of Array.from(_chunkMeshes)) {
+    const [kcx, kcz] = key.split(',').map(Number);
+    if (Math.abs(kcx - cx) > RD || Math.abs(kcz - cz) > RD) {
+      _unloadChunkVisuals(key, entry);
     }
   }
 
-  // 4. Generar chunks nuevos (rebuild:false en cada addBlock).
-  //    Los bloques fuera del radio NO se eliminan del blockMap:
-  //    persisten en RAM. rebuildWorldMeshes() aplica culling de
-  //    distancia para excluirlos de la GPU sin borrarlos.
-  for (const key of desiredChunks) {
-    if (_generatedChunks.has(key)) continue;
-    const [ocx, ocz] = key.split(',').map(Number);
-    _generateChunk(ocx, ocz);
-    _generatedChunks.add(key);
+  // ── Etapa 2: lista de chunks deseados sin malla, orden radial ────
+  const pending = [];
+  for (let dx = -RD; dx <= RD; dx++) {
+    for (let dz = -RD; dz <= RD; dz++) {
+      const key = chunkKey(cx + dx, cz + dz);
+      if (!_chunkMeshes.has(key)) {
+        pending.push({ cx: cx + dx, cz: cz + dz, distSq: dx * dx + dz * dz, key });
+      }
+    }
+  }
+  if (pending.length === 0) return;
+
+  // Ordenar del más cercano al más lejano
+  pending.sort((a, b) => a.distSq - b.distSq);
+
+  // ── Etapa 3: procesar 1 chunk (el más cercano) este frame ────────
+  const item = pending[0];
+
+  if (!_generatedChunks.has(item.key)) {
+    // Terreno no generado aún → generarlo en blockMap
+    _generateChunk(item.cx, item.cz);
+    _generatedChunks.add(item.key);
   }
 
-  // 5. Rebuild unico — siempre al cambiar de chunk para actualizar
-  //    el culling de distancia aunque no haya chunks nuevos.
-  rebuildWorldMeshes();
+  // Construir (o reconstruir) solo la malla de este chunk
+  buildChunkMesh(item.cx, item.cz);
 }
 
 // ── _generateChunk (interno) ──────────────────────────────────────
-//  Genera las columnas de terreno de un chunk usando _noise2D.
-//  Usa addBlock({rebuild:false}) en masa para evitar rebuildWorldMeshes
-//  por cada bloque; el rebuild se delega a updateChunks().
+//  Rellena blockMap con el terreno de un chunk usando Fractal
+//  Brownian Motion de 3 octavas. Usa { rebuild: false } en todos
+//  los addBlock → la malla la construye updateChunks() después.
 
 function _generateChunk(cx, cz) {
   const CS     = CONFIG.CHUNK_SIZE;
@@ -459,7 +594,7 @@ function _generateChunk(cx, cz) {
 
   for (let x = xStart; x < xEnd; x++) {
     for (let z = zStart; z < zEnd; z++) {
-      // Fractal Brownian Motion — 3 octavas de ruido
+      // Fractal Brownian Motion — 3 octavas de ruido:
       //   n1: formas masivas (continentes, valles amplios)  escala 100
       //   n2: colinas locales de escala media               escala  30
       //   n3: detalles finos de superficie                  escala  10
@@ -467,15 +602,11 @@ function _generateChunk(cx, cz) {
       const n2 = _noise2D(x / 30,  z / 30);
       const n3 = _noise2D(x / 10,  z / 10);
 
-      // Combinar con pesos decrecientes (n1 define la forma, n3 da textura)
       let elevation = (n1 * 0.60) + (n2 * 0.30) + (n3 * 0.10);
 
-      // Exponenciacion: aplana valles y agudiza picos de montana
-      if (elevation > 0) {
-        elevation = Math.pow(elevation, 1.4);
-      }
+      // Exponenciación: aplana valles y agudiza picos de montaña
+      if (elevation > 0) elevation = Math.pow(elevation, 1.4);
 
-      // Mapear al rango de alturas: max ~27, base 5
       const maxY = Math.max(0, Math.round(elevation * 22) + 5);
 
       for (let y = 0; y <= maxY; y++) {
@@ -504,18 +635,23 @@ export function serializeWorld() {
 }
 
 export function deserializeWorld(blocksArray) {
-  // Paso 1: vaciar el mundo actual
+  // ── Paso 1: vaciar el mundo actual ──────────────────────────────
+  //  Descargar todas las mallas visuales primero
+  for (const [key, entry] of Array.from(_chunkMeshes)) {
+    _unloadChunkVisuals(key, entry);
+  }
+  //  Luego eliminar todos los bloques (incluyendo dispose de torches)
   for (const key of Array.from(blockMap.keys())) {
     const data = blockMap.get(key);
     removeBlock(data.x, data.y, data.z, { rebuild: false });
   }
 
-  // Resetear estado de chunks para la nueva sesión
+  // Resetear estado de chunks
   _generatedChunks.clear();
   _lastChunkX = null;
   _lastChunkZ = null;
 
-  // Paso 2: reconstruir desde el array serializado
+  // ── Paso 2: reconstruir desde el array serializado ───────────────
   for (const entry of blocksArray) {
     const parts = entry.split(':');
     if (parts.length < 2) continue;
@@ -540,8 +676,8 @@ export function deserializeWorld(blocksArray) {
     addBlock(x, y, z, type, normal, { rebuild: false });
   }
 
-  // Paso 3: registrar en _generatedChunks los chunks presentes
-  //  → updateChunks() no regenerará terreno encima de bloques cargados
+  // ── Paso 3: marcar chunks presentes en el save como generados ────
+  //  updateChunks() no regenerará terreno encima de bloques cargados.
   const CS = CONFIG.CHUNK_SIZE;
   for (const data of blockMap.values()) {
     _generatedChunks.add(chunkKey(
@@ -550,6 +686,11 @@ export function deserializeWorld(blocksArray) {
     ));
   }
 
-  // Paso 4: rebuild único
-  rebuildWorldMeshes();
+  // ── Paso 4: construir mallas para todos los chunks del save ──────
+  //  buildChunkMesh() es ahora O(16.384) por chunk → rápido incluso
+  //  con muchos chunks guardados.
+  for (const key of _generatedChunks) {
+    const [ccx, ccz] = key.split(',').map(Number);
+    buildChunkMesh(ccx, ccz);
+  }
 }
