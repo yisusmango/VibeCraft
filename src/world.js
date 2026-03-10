@@ -185,11 +185,6 @@ const _generatedChunks = new Set();
 let _lastChunkX        = null;
 let _lastChunkZ        = null;
 
-// Parámetros de topografía (constantes por mundo)
-const TERRAIN_SCALE     = 22;
-const TERRAIN_AMPLITUDE = 5;
-const TERRAIN_BASE      = 4;
-
 /**
  * resetChunks — Reinicia el sistema de chunks para un mundo nuevo.
  *   • Crea una nueva instancia de noise2D (semilla aleatoria).
@@ -237,6 +232,14 @@ export function rebuildWorldMeshes() {
   const counts = Object.fromEntries(INSTANCED_TYPES.map(t => [t, 0]));
   for (const data of blockMap.values()) {
     if (!INSTANCED_TYPES.includes(data.type)) continue;
+    // Culling de distancia: bloques fuera del radio no van a la GPU
+    // pero permanecen en blockMap (separacion RAM / VRAM).
+    const bCx = Math.floor(data.x / CONFIG.CHUNK_SIZE);
+    const bCz = Math.floor(data.z / CONFIG.CHUNK_SIZE);
+    if (_lastChunkX !== null && (
+      Math.abs(bCx - _lastChunkX) > CONFIG.RENDER_DISTANCE ||
+      Math.abs(bCz - _lastChunkZ) > CONFIG.RENDER_DISTANCE
+    )) continue;
     if (isBlockOccluded(data.x, data.y, data.z)) continue;
     counts[data.type]++;
   }
@@ -256,6 +259,12 @@ export function rebuildWorldMeshes() {
 
   for (const data of blockMap.values()) {
     if (!INSTANCED_TYPES.includes(data.type)) continue;
+    const bCx = Math.floor(data.x / CONFIG.CHUNK_SIZE);
+    const bCz = Math.floor(data.z / CONFIG.CHUNK_SIZE);
+    if (_lastChunkX !== null && (
+      Math.abs(bCx - _lastChunkX) > CONFIG.RENDER_DISTANCE ||
+      Math.abs(bCz - _lastChunkZ) > CONFIG.RENDER_DISTANCE
+    )) continue;
     if (isBlockOccluded(data.x, data.y, data.z)) continue;
     const im  = meshByType[data.type];
     const idx = indexByType[data.type]++;
@@ -409,7 +418,10 @@ export function updateChunks(playerX, playerZ) {
     }
   }
 
-  // 4. Generar chunks nuevos (rebuild:false en cada addBlock)
+  // 4. Generar chunks nuevos (rebuild:false en cada addBlock).
+  //    Los bloques fuera del radio NO se eliminan del blockMap:
+  //    persisten en RAM. rebuildWorldMeshes() aplica culling de
+  //    distancia para excluirlos de la GPU sin borrarlos.
   for (const key of desiredChunks) {
     if (_generatedChunks.has(key)) continue;
     const [ocx, ocz] = key.split(',').map(Number);
@@ -417,22 +429,8 @@ export function updateChunks(playerX, playerZ) {
     _generatedChunks.add(key);
   }
 
-  // 5. Descargar bloques fuera del radio
-  //    Snapshot para no iterar un Map que se modifica en el bucle
-  let anyRemoved = false;
-  for (const data of Array.from(blockMap.values())) {
-    const bCx = Math.floor(data.x / CS);
-    const bCz = Math.floor(data.z / CS);
-    const bKey = chunkKey(bCx, bCz);
-
-    if (!desiredChunks.has(bKey)) {
-      _generatedChunks.delete(bKey);  // puede regenerarse al volver
-      removeBlock(data.x, data.y, data.z, { rebuild: false });
-      anyRemoved = true;
-    }
-  }
-
-  // 6. Rebuild único
+  // 5. Rebuild unico — siempre al cambiar de chunk para actualizar
+  //    el culling de distancia aunque no haya chunks nuevos.
   rebuildWorldMeshes();
 }
 
@@ -448,9 +446,24 @@ function _generateChunk(cx, cz) {
 
   for (let x = xStart; x < xEnd; x++) {
     for (let z = zStart; z < zEnd; z++) {
-      // Coordenadas mundiales garantizan continuidad entre chunks
-      const noiseVal = _noise2D(x / TERRAIN_SCALE, z / TERRAIN_SCALE);
-      const maxY = Math.max(0, Math.round(noiseVal * TERRAIN_AMPLITUDE) + TERRAIN_BASE);
+      // Fractal Brownian Motion — 3 octavas de ruido
+      //   n1: formas masivas (continentes, valles amplios)  escala 100
+      //   n2: colinas locales de escala media               escala  30
+      //   n3: detalles finos de superficie                  escala  10
+      const n1 = _noise2D(x / 100, z / 100);
+      const n2 = _noise2D(x / 30,  z / 30);
+      const n3 = _noise2D(x / 10,  z / 10);
+
+      // Combinar con pesos decrecientes (n1 define la forma, n3 da textura)
+      let elevation = (n1 * 0.60) + (n2 * 0.30) + (n3 * 0.10);
+
+      // Exponenciacion: aplana valles y agudiza picos de montana
+      if (elevation > 0) {
+        elevation = Math.pow(elevation, 1.4);
+      }
+
+      // Mapear al rango de alturas: max ~27, base 5
+      const maxY = Math.max(0, Math.round(elevation * 22) + 5);
 
       for (let y = 0; y <= maxY; y++) {
         let type;
