@@ -119,7 +119,7 @@ const PHASE_ORDER = [
   // ── Stop 4 ─ NOCHE (plateau START) ────────────────────────────
   { t: 0.650,
     sky: _nightSky, fog: _nightFog, ambient: _nightAmbient, sun: _nightSun,
-    sunIntensity: 0.00, ambientIntensity: 0.12,
+    sunIntensity: 0.18, ambientIntensity: 0.28,
     cloud: _nightCloud,                      // gris-azul oscuro
   },
 
@@ -130,7 +130,7 @@ const PHASE_ORDER = [
   //  produciendo la transición final noche→amanecer de 7.5%.
   { t: 0.925,
     sky: _nightSky, fog: _nightFog, ambient: _nightAmbient, sun: _nightSun,
-    sunIntensity: 0.00, ambientIntensity: 0.12,
+    sunIntensity: 0.18, ambientIntensity: 0.28,
     cloud: _nightCloud,
   },
 
