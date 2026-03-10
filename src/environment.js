@@ -72,6 +72,10 @@ const _nightAmbient = new THREE.Color(0x1a2844);
 const _nightSun     = new THREE.Color(0x4466aa);
 const _nightCloud   = new THREE.Color(0x1e2233);
 
+// Vector reutilizable para leer la posición mundial de la cámara sin
+// instanciar un objeto nuevo en cada frame (evita presión sobre el GC).
+const _worldPos = new THREE.Vector3();
+
 const PHASE_ORDER = [
 
   // ── Stop 0 ─ AMANECER: inicio de la transición al día ─────────
@@ -495,13 +499,12 @@ export class Environment {
     this._pivot.rotation.x = this._dayTToSunAngle(this._dayT);
 
     // 5. Seguir la cámara en XZ para que el sol nunca "se aleje"
-    const camPos = camera.parent
-      ? camera.parent.position   // PointerLockControls: cámara hija del yaw object
-      : camera.position;
-    this._pivot.position.x = camPos.x;
-    this._pivot.position.z = camPos.z;
-    // Fijamos Y del pivote en 0 para que el eje de giro esté siempre al nivel del suelo
-    this._pivot.position.y = camPos.y;
+    //    getWorldPosition() lee la posición absoluta del mundo, ignorando
+    //    la jerarquía interna de PointerLockControls (donde camera.parent
+    //    devolvía siempre (0,0,0) porque la cámara es hija del yaw object).
+    camera.getWorldPosition(_worldPos);
+    const camPos = _worldPos;
+    this._pivot.position.copy(camPos);
 
     // 6. Hacer que Sol y Luna siempre miren a la cámara (billboarding)
     this._sunMesh.lookAt(camPos);
