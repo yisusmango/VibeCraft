@@ -255,7 +255,7 @@ export class Environment {
     // ── Sol ──────────────────────────────────────────────────────
     //  Plano de 18×18 unidades con textura aditiva para brillar
     //  sin importar la iluminación de la escena.
-    const sunGeo  = new THREE.PlaneGeometry(18, 18);
+    const sunGeo  = new THREE.PlaneGeometry(32, 32);
     const sunMat  = new THREE.MeshBasicMaterial({
       map:         makeSunTexture(),
       transparent: true,
@@ -276,11 +276,11 @@ export class Environment {
     //     world_Y = -(-110)×sin(π/2) = +110  → SOL ARRIBA ✓
     //   Con la luna en Z=+110, a medianoche (rotation.x=3π/2):
     //     world_Y = -(+110)×sin(3π/2) = +110 → LUNA ARRIBA ✓
-    this._sunMesh.position.set(0, 0, -110);   // ← era +110, ahora -110
+    this._sunMesh.position.set(0, 0, -180);   // ← era +110, ahora -110
     this._pivot.add(this._sunMesh);
 
     // ── Luna ─────────────────────────────────────────────────────
-    const moonGeo  = new THREE.PlaneGeometry(12, 12);
+    const moonGeo  = new THREE.PlaneGeometry(24, 24);
     const moonMat  = new THREE.MeshBasicMaterial({
       map:         makeMoonTexture(),
       transparent: true,
@@ -290,7 +290,7 @@ export class Environment {
       side:        THREE.DoubleSide,
     });
     this._moonMesh = new THREE.Mesh(moonGeo, moonMat);
-    this._moonMesh.position.set(0, 0, 110);   // ← era -110, ahora +110
+    this._moonMesh.position.set(0, 0, 180);   // ← era -110, ahora +110
     this._pivot.add(this._moonMesh);
   }
 
@@ -501,7 +501,7 @@ export class Environment {
     this._pivot.position.x = camPos.x;
     this._pivot.position.z = camPos.z;
     // Fijamos Y del pivote en 0 para que el eje de giro esté siempre al nivel del suelo
-    this._pivot.position.y = 0;
+    this._pivot.position.y = camPos.y;
 
     // 6. Hacer que Sol y Luna siempre miren a la cámara (billboarding)
     this._sunMesh.lookAt(camPos);
