@@ -231,15 +231,27 @@ export function rebuildWorldMeshes() {
 
   const counts = Object.fromEntries(INSTANCED_TYPES.map(t => [t, 0]));
   for (const data of blockMap.values()) {
-    if (!INSTANCED_TYPES.includes(data.type)) continue;
-    // Culling de distancia: bloques fuera del radio no van a la GPU
-    // pero permanecen en blockMap (separacion RAM / VRAM).
+    // Distancia al chunk del jugador (para culling y visibilidad)
     const bCx = Math.floor(data.x / CONFIG.CHUNK_SIZE);
     const bCz = Math.floor(data.z / CONFIG.CHUNK_SIZE);
-    if (_lastChunkX !== null && (
+    const isOutOfRange = _lastChunkX !== null && (
       Math.abs(bCx - _lastChunkX) > CONFIG.RENDER_DISTANCE ||
       Math.abs(bCz - _lastChunkZ) > CONFIG.RENDER_DISTANCE
-    )) continue;
+    );
+
+    // Mallas individuales (antorchas): alternar visibilidad en lugar
+    // de incluirlas en el InstancedMesh. Esto evita que queden
+    // flotando cuando su chunk sale del radio de render.
+    if (data.mesh) {
+      data.mesh.visible = !isOutOfRange;
+      if (data.mesh.userData.pointLight) {
+        data.mesh.userData.pointLight.visible = !isOutOfRange;
+      }
+      continue;  // las mallas individuales no entran en InstancedMesh
+    }
+
+    if (!INSTANCED_TYPES.includes(data.type)) continue;
+    if (isOutOfRange) continue;
     if (isBlockOccluded(data.x, data.y, data.z)) continue;
     counts[data.type]++;
   }
@@ -258,6 +270,7 @@ export function rebuildWorldMeshes() {
   }
 
   for (const data of blockMap.values()) {
+    if (data.mesh) continue;  // antorchas ya gestionadas arriba
     if (!INSTANCED_TYPES.includes(data.type)) continue;
     const bCx = Math.floor(data.x / CONFIG.CHUNK_SIZE);
     const bCz = Math.floor(data.z / CONFIG.CHUNK_SIZE);
