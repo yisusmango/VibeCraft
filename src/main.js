@@ -17,7 +17,8 @@ import { PointerLockControls } from 'three/addons/controls/PointerLockControls.j
 
 import { CONFIG }                           from './config.js';
 import { initWorld, updateChunks, resetChunks, blockMap, hasBlock,
-         serializeWorld, deserializeWorld }  from './world.js';
+         serializeWorld, deserializeWorld,
+         checkLeafDecay }                    from './world.js';
 import { initPlayer, updatePhysics, player } from './player.js';
 import { initInteraction, updateRaycaster, getTargetBlock } from './interaction.js';
 import { initUI, updateHUD }                from './ui.js';
@@ -531,6 +532,7 @@ function animate() {
       updateRaycaster(camera, controls);
     }
     updateHUD(player, blockMap, getTargetBlock());
+    checkLeafDecay();
   }
 
   // Environment se actualiza siempre (día/noche visible en el menú también)
