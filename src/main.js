@@ -25,6 +25,8 @@ import { initUI, updateHUD }                from './ui.js';
 import { Environment }                      from './environment.js';
 import { getAllWorlds, saveWorld,
          loadWorld,   deleteWorld }         from './storage.js';
+import { initMultiplayer, sendUpdate,
+         updateOtherPlayers }               from './multiplayer.js';
 
 // ═══════════════════════════════════════════════════════════════
 //  🖥️  RENDERER
@@ -138,6 +140,7 @@ initWorld(scene);
 initPlayer(controls);
 initInteraction(scene, controls);
 initUI(controls);
+initMultiplayer(scene);  // conectar al servidor Socket.io
 
 // ═══════════════════════════════════════════════════════════════
 //  🏠  BOTÓN SINGLEPLAYER — transición Menú → Juego
@@ -530,7 +533,9 @@ function animate() {
       updatePhysics(dt, camera, controls);
       updateChunks(player.position.x, player.position.z);
       updateRaycaster(camera, controls);
+      sendUpdate(player.position, camera);  // multiplayer: enviar estado local
     }
+    updateOtherPlayers();  // multiplayer: interpolar posiciones remotas
     updateHUD(player, blockMap, getTargetBlock());
     checkLeafDecay();
   }
