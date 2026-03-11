@@ -602,18 +602,34 @@ export function updateChunks(playerX, playerZ) {
 function _generateTree(startX, startY, startZ) {
   const trunkHeight = Math.floor(Math.random() * 3) + 4; // 4–6 bloques
 
-  // 1. Copa de hojas: empieza 2 bloques antes del tope del tronco
-  //    y sube 1 bloque por encima. La copa se estrecha hacia arriba
-  //    reduciendo el radio cada 2 bloques (radius = 1 - floor(dy/2)).
-  for (let y = startY + trunkHeight - 2; y <= startY + trunkHeight + 1; y++) {
-    const dy     = y - (startY + trunkHeight);
-    const radius = 1 - Math.floor(dy / 2);
+  // 1. Copa de hojas — 3 capas con forma orgánica por ruido y recorte de esquinas
+  //
+  //  ESTRUCTURA DE CAPAS (relativeY = y - leafStart):
+  //    relY 0–2 : capa ancha  (radius=2, 5×5) con 15% huecos en bordes y
+  //               sin esquinas extremas → aspecto redondeado
+  //    relY 3–4 : capa alta   (radius=1, 3×3) más densa y compacta (punta)
+  //
+  //  REGLAS POR CELDA:
+  //    • Centro del tronco (x==startX && z==startZ) debajo del tope: omitir
+  //      (el tronco lo rellenará en el paso 2).
+  //    • Bordes del radio: 15% de probabilidad de hueco → follaje irregular.
+  //    • Esquinas extremas (|dx|==r && |dz|==r con r>1): siempre eliminadas
+  //      → sin aspecto de cubo perfecto.
+  const leafStart = startY + trunkHeight - 3;
+  for (let y = leafStart; y <= startY + trunkHeight + 1; y++) {
+    const relativeY = y - leafStart;              // 0–4
+    const radius    = relativeY >= 3 ? 1 : 2;    // capa alta → radio 1, resto → radio 2
 
-    for (let x = startX - 2; x <= startX + 2; x++) {
-      for (let z = startZ - 2; z <= startZ + 2; z++) {
-        // Recorte de esquinas con distancia Manhattan → forma orgánica
-        const dist = Math.abs(x - startX) + Math.abs(z - startZ);
-        if (dist > 3 || (dist === 3 && Math.random() > 0.5)) continue;
+    for (let x = startX - radius; x <= startX + radius; x++) {
+      for (let z = startZ - radius; z <= startZ + radius; z++) {
+        // 1. No poner hojas donde va el tronco
+        if (x === startX && z === startZ && y <= startY + trunkHeight) continue;
+
+        // 2. Ruido orgánico: 15% de probabilidad de hueco en los bordes
+        if ((Math.abs(x - startX) === radius || Math.abs(z - startZ) === radius) && Math.random() < 0.15) continue;
+
+        // 3. Cortar las esquinas extremas para redondear
+        if (Math.abs(x - startX) === radius && Math.abs(z - startZ) === radius && radius > 1) continue;
 
         if (!hasBlock(x, y, z)) {
           addBlock(x, y, z, 'leaves', null, { rebuild: false });
