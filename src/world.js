@@ -761,3 +761,56 @@ export function deserializeWorld(blocksArray) {
     buildChunkMesh(ccx, ccz);
   }
 }
+// ═══════════════════════════════════════════════════════════════
+//  checkLeafDecay — Simulación de caída de hojas
+//  ─────────────────────────────────────────────────────────────
+//  Cada frame muestrea 20 bloques al azar del blockMap.
+//  Si el bloque es de tipo 'leaves' y no hay ningún bloque 'wood'
+//  dentro de un radio de 4 bloques (cubo 9×9×9 centrado en él),
+//  el bloque se destruye, propagando la caída naturalmente.
+//
+//  DISEÑO:
+//  • Muestreo aleatorio → O(20) por frame, sin iterar blockMap completo.
+//  • Radio Manhattan 4 → cubre la distancia máxima tronco↔hoja en
+//    árboles de trunkHeight=6 + radio de copa=2: 6+2=8>4, pero en
+//    la práctica las hojas más lejanas del tronco están a ≤4 bloques
+//    en XZ, por lo que el radio 4 basta sin falsos positivos.
+//  • removeBlock() con rebuild=true por defecto → buildChunkMesh()
+//    se ejecuta para ese chunk inmediatamente, actualizando la malla.
+// ═══════════════════════════════════════════════════════════════
+
+export function checkLeafDecay() {
+  if (blockMap.size === 0) return;
+
+  // Convertir las claves a array UNA sola vez y elegir 20 al azar
+  const keys  = Array.from(blockMap.keys());
+  const total = keys.length;
+
+  for (let i = 0; i < 20; i++) {
+    const key  = keys[(Math.random() * total) | 0];
+    const data = blockMap.get(key);
+    if (!data || data.type !== 'leaves') continue;
+
+    const { x, y, z } = data;
+    let hasWoodNearby  = false;
+
+    // Buscar madera en un cubo de radio 4 (9×9×9 = 729 comprobaciones máx)
+    // Cada comprobación es un Map.get → O(1). Total: ≤729 por hoja muestreada.
+    outer:
+    for (let dx = -4; dx <= 4; dx++) {
+      for (let dy = -4; dy <= 4; dy++) {
+        for (let dz = -4; dz <= 4; dz++) {
+          const n = blockMap.get(blockKey(x + dx, y + dy, z + dz));
+          if (n && n.type === 'wood') {
+            hasWoodNearby = true;
+            break outer;
+          }
+        }
+      }
+    }
+
+    if (!hasWoodNearby) {
+      removeBlock(x, y, z);
+    }
+  }
+}
