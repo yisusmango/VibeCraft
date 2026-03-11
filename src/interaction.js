@@ -31,6 +31,7 @@ import { CONFIG, HALF_W }                                  from './config.js';
 import { addBlock, removeBlock, hasBlock, getBlockMeshes } from './world.js';
 import { player }                                          from './player.js';
 import { getCurrentBlockType }                             from './ui.js';
+import { sendBlockUpdate }                                 from './multiplayer.js';
 
 // ═══════════════════════════════════════════════════════════════
 //  🎯  RAYCASTER
@@ -172,7 +173,9 @@ function wouldOverlapPlayer(bx, by, bz, blockType = 'grass') {
 /** Destruye el bloque apuntado (clic izquierdo). */
 function destroyBlock() {
   if (!targetBlock) return;
-  removeBlock(targetBlock.x, targetBlock.y, targetBlock.z);
+  const { x, y, z } = targetBlock;
+  removeBlock(x, y, z);
+  sendBlockUpdate('remove', x, y, z, null, null);  // notificar a otros
   targetBlock = null;
   highlightMesh.visible = false;
 }
@@ -195,6 +198,7 @@ function placeBlock() {
   if (wouldOverlapPlayer(nx, ny, nz, selectedType)) return;
 
   addBlock(nx, ny, nz, selectedType, targetFaceNormal);
+  sendBlockUpdate('add', nx, ny, nz, selectedType, targetFaceNormal);  // notificar a otros
 }
 
 // ═══════════════════════════════════════════════════════════════
