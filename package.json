@@ -1,0 +1,25 @@
+{
+  "name": "vibecraft",
+  "version": "1.0.0",
+  "description": "**VibeCraft** es un motor de juego de tipo voxel de alto rendimiento construido desde cero utilizando **Three.js** y **WebGL**. Este proyecto ha evolucionado de un prototipo estático a un motor de mundo infinito procedural, centrándose en la optimización de memoria (Garbage Collection) y la fidelidad técnica de un motor \"Vanilla\" moderno.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yisusmango/VibeCraft.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/yisusmango/VibeCraft/issues"
+  },
+  "homepage": "https://github.com/yisusmango/VibeCraft#readme",
+  "dependencies": {
+    "express": "^5.2.1",
+    "socket.io": "^4.8.3"
+  }
+}
