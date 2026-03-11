@@ -37,7 +37,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import * as THREE from 'three';
-import { addBlock, removeBlock } from './world.js';
+import { addBlock, removeBlock, buildChunkMesh, setNoiseSeed } from './world.js';
 
 // ── Configuración ────────────────────────────────────────────────
 const SERVER_URL     = 'http://localhost:3000';
@@ -110,8 +110,15 @@ export function initMultiplayer(scene) {
         console.warn('[VibeCraft MP] No se pudo conectar al servidor:', err.message);
       });
 
-      // ── Snapshot inicial: otros jugadores ya conectados ──────────
-      _socket.on('playersSnapshot', (players) => {
+      // ── worldInit: recibir semilla del servidor + snapshot de jugadores ──
+      //  Se ejecuta UNA SOLA VEZ al conectarse. La semilla debe aplicarse
+      //  antes de que updateChunks() genere el primer chunk, así que la
+      //  pasamos a setNoiseSeed() inmediatamente. Si el mundo ya tiene
+      //  chunks generados (reconexión rápida), resetChunks() en main.js
+      //  regenerará con la semilla correcta en la próxima carga de mundo.
+      _socket.on('worldInit', ({ seed, players }) => {
+        setNoiseSeed(seed);
+        console.info(`[VibeCraft MP] Semilla del servidor recibida: ${seed.toFixed(8)}`);
         players.forEach(data => _upsertPlayer(data));
       });
 
@@ -122,15 +129,25 @@ export function initMultiplayer(scene) {
       });
 
       // ── Sincronización de bloques ─────────────────────────────────
-      //  Aplica el delta recibido en el blockMap local.
-      //  Usamos los mismos addBlock/removeBlock del módulo world.js,
-      //  con rebuild:true para actualizar la malla del chunk afectado.
+      //  Aplica el delta recibido en el blockMap local y reconstruye
+      //  la malla del chunk afectado explícitamente.
+      //
+      //  addBlock/removeBlock ya llaman buildChunkMesh internamente con
+      //  rebuild:true por defecto, pero lo invocamos también aquí de
+      //  forma explícita para mayor robustez (ej. si en el futuro se
+      //  cambia el default a rebuild:false en las funciones base).
       _socket.on('blockUpdate', (data) => {
+        const CS = 16;  // CONFIG.CHUNK_SIZE — inline para evitar import circular
         if (data.action === 'add') {
           addBlock(data.x, data.y, data.z, data.type, data.normal ?? null);
         } else if (data.action === 'remove') {
           removeBlock(data.x, data.y, data.z);
         }
+        // Forzar reconstrucción de malla del chunk afectado
+        buildChunkMesh(
+          Math.floor(data.x / CS),
+          Math.floor(data.z / CS),
+        );
       });
 
       // ── Jugador desconectado ──────────────────────────────────────
