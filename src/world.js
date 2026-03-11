@@ -582,6 +582,52 @@ export function updateChunks(playerX, playerZ) {
   buildChunkMesh(item.cx, item.cz);
 }
 
+// ── _generateTree (interno) ──────────────────────────────────────
+//  Coloca una estructura de árbol (tronco de madera + copa de hojas)
+//  sobre el bloque de superficie en (startX, startY, startZ).
+//
+//  GEOMETRÍA:
+//    • Tronco : columna vertical de 4–6 bloques de madera (random).
+//    • Copa   : cluster 5×5 que se estrecha hacia la punta, usando
+//               distancia Manhattan para recortar esquinas y dar forma
+//               orgánica (sin cubos perfectos).
+//
+//  REGLAS DE COLOCACIÓN:
+//    • La copa solo ocupa celdas vacías (no sobreescribe terreno).
+//    • El tronco SÍ sobreescribe hojas en el eje central — permite
+//      que troncos y copas adyacentes se superpongan correctamente.
+//    • Ambas usan { rebuild: false } → la malla la genera
+//      buildChunkMesh() una sola vez al terminar el chunk.
+
+function _generateTree(startX, startY, startZ) {
+  const trunkHeight = Math.floor(Math.random() * 3) + 4; // 4–6 bloques
+
+  // 1. Copa de hojas: empieza 2 bloques antes del tope del tronco
+  //    y sube 1 bloque por encima. La copa se estrecha hacia arriba
+  //    reduciendo el radio cada 2 bloques (radius = 1 - floor(dy/2)).
+  for (let y = startY + trunkHeight - 2; y <= startY + trunkHeight + 1; y++) {
+    const dy     = y - (startY + trunkHeight);
+    const radius = 1 - Math.floor(dy / 2);
+
+    for (let x = startX - 2; x <= startX + 2; x++) {
+      for (let z = startZ - 2; z <= startZ + 2; z++) {
+        // Recorte de esquinas con distancia Manhattan → forma orgánica
+        const dist = Math.abs(x - startX) + Math.abs(z - startZ);
+        if (dist > 3 || (dist === 3 && Math.random() > 0.5)) continue;
+
+        if (!hasBlock(x, y, z)) {
+          addBlock(x, y, z, 'leaves', null, { rebuild: false });
+        }
+      }
+    }
+  }
+
+  // 2. Tronco de madera: sobrescribe las hojas en el eje central
+  for (let y = startY + 1; y <= startY + trunkHeight; y++) {
+    addBlock(startX, y, startZ, 'wood', null, { rebuild: false });
+  }
+}
+
 // ── _generateChunk (interno) ──────────────────────────────────────
 //  Rellena blockMap con el terreno de un chunk usando Fractal
 //  Brownian Motion de 3 octavas. Usa { rebuild: false } en todos
@@ -615,6 +661,11 @@ function _generateChunk(cx, cz) {
         else if (y >= maxY - 2) type = 'dirt';
         else                    type = 'stone';
         addBlock(x, y, z, type, null, { rebuild: false });
+      }
+
+      // 1.5% de probabilidad de árbol sobre pasto por encima del nivel del mar
+      if (maxY >= 6 && Math.random() < 0.015) {
+        _generateTree(x, maxY, z);
       }
     }
   }
