@@ -86,41 +86,50 @@ function _createPlayerMesh(scene) {
 //  @param {THREE.Scene} scene
 // ═══════════════════════════════════════════════════════════════
 
+/**
+ * initMultiplayer — conecta al servidor y retorna una Promise que se
+ * resuelve ÚNICAMENTE cuando el servidor envía 'worldInit' con el
+ * SERVER_SEED. Esto garantiza que world.js ya tiene la semilla correcta
+ * antes de que main.js genere el primer chunk.
+ *
+ * Si el servidor no está disponible, la Promise se rechaza y main.js
+ * puede mostrar un error sin bloquear el resto del juego.
+ */
 export function initMultiplayer(scene) {
   _scene = scene;
 
-  // Carga dinámica de Socket.io client desde el servidor local.
-  // Se usa import() dinámico para evitar que el fallo de conexión
-  // (ej. servidor apagado) rompa el resto del juego.
-  import('http://localhost:3000/socket.io/socket.io.esm.min.js')
-    .then(({ io }) => {
-      _socket = io(SERVER_URL, {
-        // reconnectionAttempts limita cuántas veces reintentamos
-        // antes de rendirse — evita bucles de reconexión infinita.
-        reconnectionAttempts: 5,
-        timeout: 5000,
-      });
+  // Retornamos la Promise ANTES de la carga dinámica.
+  // La Promise se resuelve con la semilla en el handler de 'worldInit'.
+  return new Promise((resolve, reject) => {
+    import('http://localhost:3000/socket.io/socket.io.esm.min.js')
+      .then(({ io }) => {
+        _socket = io(SERVER_URL, {
+          reconnectionAttempts: 5,
+          timeout: 5000,
+        });
 
-      _socket.on('connect', () => {
-        _myId = _socket.id;
-        console.info(`[VibeCraft MP] Conectado al servidor. ID: ${_myId}`);
-      });
+        _socket.on('connect', () => {
+          _myId = _socket.id;
+          console.info(`[VibeCraft MP] Conectado al servidor. ID: ${_myId}`);
+        });
 
-      _socket.on('connect_error', (err) => {
-        console.warn('[VibeCraft MP] No se pudo conectar al servidor:', err.message);
-      });
+        // connect_error → rechazar la Promise para que await en main.js
+        // pueda capturarlo con try/catch y mostrar un error al jugador.
+        _socket.on('connect_error', (err) => {
+          console.warn('[VibeCraft MP] No se pudo conectar al servidor:', err.message);
+          reject(err);
+        });
 
-      // ── worldInit: recibir semilla del servidor + snapshot de jugadores ──
-      //  Se ejecuta UNA SOLA VEZ al conectarse. La semilla debe aplicarse
-      //  antes de que updateChunks() genere el primer chunk, así que la
-      //  pasamos a setNoiseSeed() inmediatamente. Si el mundo ya tiene
-      //  chunks generados (reconexión rápida), resetChunks() en main.js
-      //  regenerará con la semilla correcta en la próxima carga de mundo.
-      _socket.on('worldInit', ({ seed, players }) => {
-        setNoiseSeed(seed);
-        console.info(`[VibeCraft MP] Semilla del servidor recibida: ${seed.toFixed(8)}`);
-        players.forEach(data => _upsertPlayer(data));
-      });
+        // ── worldInit: recibir semilla del servidor + snapshot de jugadores ──
+        //  PUNTO DE RESOLUCIÓN: solo aquí la Promise se resuelve.
+        //  main.js usa await para bloquear la generación de chunks hasta
+        //  este momento — elimina la condición de carrera completamente.
+        _socket.on('worldInit', ({ seed, players }) => {
+          setNoiseSeed(seed);
+          console.info(`[VibeCraft MP] Semilla recibida: ${seed.toFixed(8)} — terreno listo.`);
+          players.forEach(data => _upsertPlayer(data));
+          resolve(seed);  // ← desbloquea el await en startMultiplayer()
+        });
 
       // ── Actualización de posición de un jugador remoto ───────────
       _socket.on('playerUpdate', (data) => {
@@ -164,11 +173,13 @@ export function initMultiplayer(scene) {
       _socket.on('disconnect', () => {
         console.info('[VibeCraft MP] Desconectado del servidor.');
       });
-    })
-    .catch(() => {
-      // El servidor no está corriendo — el juego continúa en modo single.
-      console.info('[VibeCraft MP] Servidor no disponible. Modo single player.');
-    });
+      })
+      .catch((err) => {
+        // El servidor no está corriendo — rechazar la Promise.
+        console.info('[VibeCraft MP] Servidor no disponible. Modo single player.');
+        reject(err);
+      });
+  });  // end new Promise
 }
 
 // ═══════════════════════════════════════════════════════════════

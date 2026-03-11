@@ -140,7 +140,8 @@ initWorld(scene);
 initPlayer(controls);
 initInteraction(scene, controls);
 initUI(controls);
-initMultiplayer(scene);  // conectar al servidor Socket.io
+// initMultiplayer() ya NO se llama aquí en el arranque.
+// Se invoca bajo demanda en startMultiplayer() cuando el jugador elige Multijugador.
 
 // ═══════════════════════════════════════════════════════════════
 //  🏠  BOTÓN SINGLEPLAYER — transición Menú → Juego
@@ -408,6 +409,55 @@ document.getElementById('btn-quit').addEventListener('click', async () => {
   document.getElementById('overlay').style.display = 'none';
   document.body.classList.add('menu-active');
   isMenuVisible = true;
+});
+
+// ═══════════════════════════════════════════════════════════════
+//  🌐  FLUJO MULTIJUGADOR
+//  ─────────────────────────────────────────────────────────────
+//  startMultiplayer() ESPERA a que initMultiplayer() resuelva su
+//  Promise (= servidor envió SERVER_SEED) antes de generar chunks.
+//  Esto elimina la condición de carrera donde el terreno se generaba
+//  con Math.random() local en lugar de la semilla compartida.
+// ═══════════════════════════════════════════════════════════════
+
+async function startMultiplayer() {
+  // Mostrar feedback mientras se conecta
+  const btn = document.getElementById('btn-multiplayer');
+  const originalText = btn.textContent;
+  btn.textContent  = 'Conectando…';
+  btn.disabled     = true;
+
+  try {
+    // AWAIT: bloquea hasta recibir SERVER_SEED — sin carrera posible
+    await initMultiplayer(scene);
+
+    // Semilla ya inyectada en world.js; ahora es seguro generar terreno
+    currentWorldId   = null;   // multijugador no usa IndexedDB local
+    currentWorldName = 'Multiplayer';
+
+    player.position.set(
+      CONFIG.CHUNK_SIZE / 2 + 0.5,
+      64,
+      CONFIG.CHUNK_SIZE / 2 + 0.5,
+    );
+    player.velocity.set(0, 0, 0);
+
+    deserializeWorld([]);
+    resetChunks();   // usa la semilla ya establecida por setNoiseSeed()
+    updateChunks(player.position.x, player.position.z);
+    spawnPlayerSafe();
+    launchWorld();
+
+  } catch (err) {
+    console.error('[VibeCraft] Error de conexión multijugador:', err);
+    alert('No se pudo conectar al servidor.\nAsegúrate de que server.js está corriendo en localhost:3000.');
+    btn.textContent = originalText;
+    btn.disabled    = false;
+  }
+}
+
+document.getElementById('btn-multiplayer').addEventListener('click', () => {
+  startMultiplayer();
 });
 
 //  IMPORTANTE: llamar DESPUÉS de initWorld() para que scene.background
