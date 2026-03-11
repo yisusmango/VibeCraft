@@ -66,6 +66,9 @@ const _lerpPos = new THREE.Vector3();
 //  🔨  _createPlayerMesh — crea la malla de un jugador remoto
 // ═══════════════════════════════════════════════════════════════
 
+// Material negro reutilizado para bordes + marcador frontal
+const _blackMat  = new THREE.MeshBasicMaterial({ color: 0x000000 });
+
 function _createPlayerMesh(scene) {
   const mesh = new THREE.Mesh(_playerGeo, _playerMat);
 
@@ -75,6 +78,21 @@ function _createPlayerMesh(scene) {
     new THREE.LineBasicMaterial({ color: 0x000000 })
   );
   mesh.add(edges);
+
+  // ── Marcador Direccional ────────────────────────────────────────
+  //  Pequeño cubo negro centrado en la cara FRONTAL del avatar (-Z local).
+  //  En Three.js los objetos miran hacia -Z por defecto, igual que la
+  //  cámara de PointerLockControls → el marcador apunta en la dirección
+  //  a la que mira el jugador remoto, confirmando que la rotación Y
+  //  está correctamente sincronizada.
+  //
+  //  Posición: x=0 (centrado), y=+0.4 (altura de los ojos ≈ EYE_HEIGHT-1),
+  //            z=-0.31 (pegado a la cara frontal, mitad grosor = 0.31).
+  const noseGeo  = new THREE.BoxGeometry(0.18, 0.18, 0.12);
+  const nose     = new THREE.Mesh(noseGeo, _blackMat);
+  nose.position.set(0, 0.4, -0.31);
+  mesh.add(nose);
+
   mesh.castShadow    = true;
   mesh.receiveShadow = false;
   scene.add(mesh);
@@ -195,11 +213,13 @@ function _upsertPlayer(data) {
   if (!entry) {
     // Primera vez que vemos a este jugador: crear malla y registrar
     const mesh = _createPlayerMesh(_scene);
+    const initRotY = data.rot?.y ?? 0;
     mesh.position.set(data.pos.x, data.pos.y, data.pos.z);
+    mesh.rotation.y = initRotY;  // snap inmediato: evita girar desde 0 al aparecer
     entry = {
       mesh,
       targetPos:  new THREE.Vector3(data.pos.x, data.pos.y, data.pos.z),
-      targetRotY: data.rot?.y ?? 0,
+      targetRotY: initRotY,
     };
     otherPlayers.set(data.id, entry);
     console.info(`[VibeCraft MP] Nuevo jugador: ${data.id}`);
@@ -271,10 +291,19 @@ export function updateOtherPlayers() {
     // Interpolar posición
     entry.mesh.position.lerp(entry.targetPos, LERP_FACTOR);
 
-    // Interpolar rotación Y (yaw) con ángulo corto
-    const dy = entry.targetRotY - entry.mesh.rotation.y;
-    // Normalizar a [-π, π] para evitar giros largos en la dirección equivocada
-    const dyNorm = ((dy + Math.PI) % (2 * Math.PI)) - Math.PI;
+    // Interpolar rotación Y (yaw) tomando el camino angular más corto.
+    //
+    // BUG ANTERIOR: ((dy + π) % 2π) - π  falla para dy negativo grande
+    // porque el operador % de JS preserva el signo del dividendo:
+    //   dy = -5  →  (-5 + π) % 2π = -1.86 % 6.28 = -1.86  ← sigue siendo negativo
+    //   luego -1.86 - π = -5.0  → no se normalizó
+    //
+    // FIX: añadir 3π antes del módulo garantiza que el operando sea
+    // siempre positivo antes de aplicar %, independientemente del signo de dy:
+    //   ((dy % 2π) + 3π) % 2π - π  →  resultado siempre en [-π, +π] ✓
+    const TAU   = 2 * Math.PI;
+    const dy    = entry.targetRotY - entry.mesh.rotation.y;
+    const dyNorm = ((dy % TAU) + 3 * Math.PI) % TAU - Math.PI;
     entry.mesh.rotation.y += dyNorm * LERP_FACTOR;
   }
 }

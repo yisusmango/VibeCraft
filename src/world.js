@@ -677,13 +677,18 @@ function _generateChunk(cx, cz) {
 
   for (let x = xStart; x < xEnd; x++) {
     for (let z = zStart; z < zEnd; z++) {
-      // Fractal Brownian Motion — 3 octavas de ruido:
-      //   n1: formas masivas (continentes, valles amplios)  escala 100
-      //   n2: colinas locales de escala media               escala  30
-      //   n3: detalles finos de superficie                  escala  10
-      const n1 = _noise2D(x / 100, z / 100);
-      const n2 = _noise2D(x / 30,  z / 30);
-      const n3 = _noise2D(x / 10,  z / 10);
+      // ── Fractal Brownian Motion — 3 octavas de ruido ─────────────
+      //  Se usan escalas explícitas (multiplicación) en lugar de
+      //  divisiones para garantizar resultados bit-a-bit idénticos
+      //  en coordenadas negativas y positivas (cuadrantes X−/Z−)
+      //  y evitar cualquier asimetría numérica entre clientes.
+      //
+      //  ESCALAS:  0.01  →  formas masivas (continentes, valles)
+      //            0.033 →  colinas de escala media
+      //            0.10  →  detalles finos de superficie
+      const n1 = _noise2D(x * 0.010, z * 0.010);
+      const n2 = _noise2D(x * 0.033, z * 0.033);
+      const n3 = _noise2D(x * 0.100, z * 0.100);
 
       let elevation = (n1 * 0.60) + (n2 * 0.30) + (n3 * 0.10);
 
@@ -700,8 +705,13 @@ function _generateChunk(cx, cz) {
         addBlock(x, y, z, type, null, { rebuild: false });
       }
 
-      // 1.5% de probabilidad de árbol sobre pasto por encima del nivel del mar
-      if (maxY >= 6 && Math.random() < 0.015) {
+      // Probabilidad de árbol: usar el mismo noise como pseudo-RNG
+      // en lugar de Math.random() global (no seeded) para que todos
+      // los clientes coloquen árboles en las mismas posiciones.
+      // _noise2D con una escala muy fina produce valores en [-1,1]
+      // distribuidos uniformemente → mapeamos a [0,1] y aplicamos umbral.
+      const treeRng = (_noise2D(x * 3.7, z * 3.7) + 1) * 0.5;  // [0,1]
+      if (maxY >= 6 && treeRng < 0.015) {
         _generateTree(x, maxY, z);
       }
     }
