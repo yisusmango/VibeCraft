@@ -219,6 +219,27 @@ let _lastChunkZ        = null;
  *   • Descarga todas las mallas visuales y limpia los Sets de estado.
  *   • El siguiente updateChunks() regenerará el terreno desde cero.
  */
+/**
+ * setNoiseSeed — Inicializa el generador de ruido con una semilla
+ * determinista compartida por el servidor. Debe llamarse ANTES del
+ * primer updateChunks() para que todos los clientes generen el
+ * mismo terreno. Acepta un número float [0,1] (Math.random()).
+ *
+ * Mecanismo: simplex-noise@4 acepta un PRNG en lugar del Math.random
+ * global. Construimos uno con un LCG simple seeded con el valor del
+ * servidor — liviano, sin dependencias adicionales.
+ */
+export function setNoiseSeed(seed) {
+  // LCG (Linear Congruential Generator) seeded — reproducible en todos
+  // los clientes con la misma semilla del servidor.
+  let s = Math.round(seed * 0xffffffff) >>> 0;  // uint32
+  const prng = () => {
+    s = (Math.imul(1664525, s) + 1013904223) >>> 0;
+    return s / 0x100000000;
+  };
+  _noise2D = createNoise2D(prng);
+}
+
 export function resetChunks() {
   _noise2D = createNoise2D();
   // Descargar y liberar todas las mallas visuales
