@@ -384,6 +384,7 @@ document.getElementById('btn-world-new').addEventListener('click', async () => {
   player.velocity.set(0, 0, 0);
 
   deserializeWorld([]);
+  setNoiseSeed(Math.random());
   resetChunks();
   updateChunks(player.position.x, player.position.z);
   spawnPlayerSafe();
