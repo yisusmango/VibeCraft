@@ -241,7 +241,6 @@ export function setNoiseSeed(seed) {
 }
 
 export function resetChunks() {
-  _noise2D = createNoise2D();
   // Descargar y liberar todas las mallas visuales
   for (const [key, entry] of _chunkMeshes) _unloadChunkVisuals(key, entry);
   _generatedChunks.clear();
