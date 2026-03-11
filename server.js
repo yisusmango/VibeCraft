@@ -58,7 +58,11 @@ app.use(express.static('.'));
 //  playerState: Map<socketId, { id, pos, rot, lastSeen }>
 //  Solo se usa para enviar el snapshot inicial al jugador recién
 //  conectado (no para lógica de juego).
-const playerState = new Map();
+// Semilla compartida: generada una vez al arrancar el servidor.
+// Todos los clientes reciben esta semilla y la pasan a Simplex Noise
+// para garantizar terrenos idénticos sin intercambiar bloques de terreno.
+const SERVER_SEED  = Math.random();
+const playerState  = new Map();
 
 // ═══════════════════════════════════════════════════════════════
 //  🔌  GESTIÓN DE CONEXIONES
@@ -70,9 +74,11 @@ io.on('connection', (socket) => {
   // ── Snapshot inicial ───────────────────────────────────────────
   //  Enviar al recién llegado el estado actual de todos los demás
   //  jugadores para que pueda crear sus mallas inmediatamente.
-  if (playerState.size > 0) {
-    socket.emit('playersSnapshot', Array.from(playerState.values()));
-  }
+  // Enviar semilla + snapshot de jugadores en un único evento inicial
+  socket.emit('worldInit', {
+    seed:    SERVER_SEED,
+    players: Array.from(playerState.values()),
+  });
 
   // ── playerUpdate ───────────────────────────────────────────────
   //  Payload: { id, pos: {x,y,z}, rot: {x,y} }
