@@ -6,12 +6,10 @@
   <title>VibeCraft</title>
   <link rel="stylesheet" href="./styles.css">
 
-  <!-- Pixel font — Press Start 2P (Google Fonts, offline fallback: Courier New) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
 
-  <!-- Three.js import map (ES Modules, sin bundler) -->
   <script type="importmap">
   {
     "imports": {
@@ -22,20 +20,10 @@
   </script>
 </head>
 
-<!--
-  body.menu-active   → visible: #main-menu   oculto: todos los elementos HUD
-  body (sin clase)   → visible: todo el HUD  oculto: #main-menu
--->
 <body class="menu-active">
 
-  <!-- ══════════════════════════════════════════════════════════
-       🏠  MENÚ PRINCIPAL
-       Se oculta al entrar al juego (JS elimina .menu-active del body).
-       Estructura: título + columna de botones + versión
-       ══════════════════════════════════════════════════════════ -->
   <div id="main-menu">
 
-    <!-- Splash text rotatorio (puramente decorativo) -->
     <div class="title-wrapper">
       <h1 class="mc-title">VibeCraft</h1>
       <div class="mc-splash">¡Ahora con nubes volumétricas!</div>
@@ -44,25 +32,17 @@
     <nav class="mc-btn-col">
       <button id="btn-singleplayer" class="mc-btn">Singleplayer</button>
       <button id="btn-multiplayer" class="mc-btn">Multiplayer</button>
-      <button id="btn-settings"     class="mc-btn mc-btn--disabled" disabled>
-        Settings
-      </button>
+      <button id="btn-settings" class="mc-btn mc-btn--disabled" disabled>Settings</button>
+      <button id="btn-upload-skin" class="mc-btn">Cambiar Skin</button>
+      <input type="file" id="skin-input" accept="image/png" style="display:none;">
     </nav>
 
-    <!-- ══════════════════════════════════════════════════════════
-         🌍  GESTOR DE MUNDOS — oculto hasta que el usuario pulsa
-         "Singleplayer". Se muestra/oculta por JS intercambiándolo
-         con .mc-btn-col sin abandonar el #main-menu.
-         ══════════════════════════════════════════════════════════ -->
     <div id="world-manager" style="display:none;">
       <h2 class="wm-title">Seleccionar Mundo</h2>
 
-      <!-- Lista scrolleable de mundos guardados -->
       <div id="worlds-list">
-        <!-- Los .world-item se inyectan dinámicamente por main.js -->
-      </div>
+        </div>
 
-      <!-- Barra de acciones inferior -->
       <div class="wm-actions">
         <button id="btn-world-new"    class="mc-btn mc-btn--sm">Crear Nuevo</button>
         <button id="btn-world-import" class="mc-btn mc-btn--sm mc-btn--disabled" disabled>Importar</button>
@@ -73,14 +53,8 @@
     <p class="mc-version">VibeCraft Alpha · Three.js r158</p>
   </div>
 
-  <!-- ══════════════════════════════════════════════════════════
-       HUD DE JUEGO — oculto durante el menú (body.menu-active)
-       ══════════════════════════════════════════════════════════ -->
-
-  <!-- Mira del jugador -->
   <div id="crosshair"></div>
 
-  <!-- Coordenadas y contador de bloques -->
   <div id="hud">
     X: <span id="hx">0.0</span>
     Y: <span id="hy">0.0</span>
@@ -88,13 +62,11 @@
     &nbsp;|&nbsp; Bloques: <span id="hb">0</span>
   </div>
 
-  <!-- Bloque apuntado -->
   <div id="block-info">
     <div class="label">Bloque apuntado</div>
     <div class="value" id="bi">—</div>
   </div>
 
-  <!-- Dev Tools: control manual del ciclo de tiempo -->
   <div id="dev-tools">
     <div class="dev-label">⚙ Dev Tools</div>
     <div class="dev-row">
@@ -105,12 +77,10 @@
     </div>
   </div>
 
-  <!-- Velocidad Y / suelo -->
   <div id="state">
     VY: <span id="svy">0.00</span> &nbsp; Suelo: <span id="sg">—</span>
   </div>
 
-  <!-- Overlay de PAUSA — Menú del Juego estilo Minecraft Java -->
   <div id="overlay">
     <h1>Menú del Juego</h1>
     <div class="mc-btn-col">
@@ -120,10 +90,8 @@
     </div>
   </div>
 
-  <!-- Hotbar (generado por ui.js) -->
   <div id="hotbar"></div>
 
-  <!-- Punto de entrada del juego -->
   <script type="module" src="./src/main.js"></script>
 
 </body>

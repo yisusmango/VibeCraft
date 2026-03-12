@@ -5,6 +5,7 @@
 //    • HUD de coordenadas y contador de bloques
 //    • Hotbar: 9 slots con iconos procedurales, selección 1-9
 //    • Exporta getCurrentBlockType() para interaction.js
+//    • Sistema de Skins: FileReader + localStorage (sin base de datos)
 // ═══════════════════════════════════════════════════════════════
 
 // ── Referencias DOM fijas ────────────────────────────────────────
@@ -31,7 +32,7 @@ export const HOTBAR_BLOCKS = [
   'leaves',  // tecla 5
   'sand',    // tecla 6
   'glass',   // tecla 7
-  'torch',   // tecla 8  ← NUEVO: antorcha con luz dinámica
+  'torch',   // tecla 8  ← antorcha con luz dinámica
   'stone',   // tecla 9
 ];
 
@@ -117,9 +118,6 @@ const ICON_PAINTERS = {
   },
 
   // ── Antorcha (torch) ───────────────────────────────────────────
-  //  Icono estilo pixel-art: palo marrón centrado + llama cuadrada
-  //  encima con núcleo blanco para imitar auto-iluminación.
-  //  Coincide con la estética visual del bloque 3D en world.js.
   torch(ctx, w, h) {
     const cx = (w / 2) | 0;
 
@@ -189,6 +187,79 @@ function setSlot(index) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  👤  SISTEMA DE SKINS — FileReader + localStorage
+//  Flujo: btn-upload-skin → dispara skin-input (file picker)
+//         → FileReader.readAsDataURL() → guarda Base64
+//         → localStorage.setItem('vibe_skin', base64)
+//  Sin base de datos, sin servidor. Persiste entre sesiones.
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Inicializa el subsistema de carga de skins.
+ * Conecta el botón del menú con el input oculto y gestiona
+ * la lectura asíncrona del archivo PNG mediante FileReader.
+ */
+function initSkinUploader() {
+  const btnUpload = document.getElementById('btn-upload-skin');
+  const skinInput = document.getElementById('skin-input');
+
+  if (!btnUpload || !skinInput) return; // guardia: elementos opcionales
+
+  // El botón visible dispara el file picker nativo (input oculto)
+  btnUpload.addEventListener('click', () => {
+    skinInput.value = '';   // reset para permitir recargar el mismo archivo
+    skinInput.click();
+  });
+
+  // Cuando el usuario selecciona un archivo PNG
+  skinInput.addEventListener('change', () => {
+    const file = skinInput.files?.[0];
+    if (!file) return;
+
+    // Validación ligera: solo PNG, máximo 2 MB
+    if (file.type !== 'image/png') {
+      alert('⚠️ Solo se aceptan archivos PNG.');
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      alert('⚠️ El archivo supera el límite de 2 MB.');
+      return;
+    }
+
+    const reader = new FileReader();
+
+    reader.addEventListener('load', () => {
+      const base64String = /** @type {string} */ (reader.result);
+
+      try {
+        localStorage.setItem('vibe_skin', base64String);
+        alert(`✅ Skin "${file.name}" cargada correctamente.\nSe aplicará la próxima vez que entres al juego.`);
+      } catch (storageError) {
+        // Puede ocurrir si localStorage está lleno (quota exceeded)
+        console.error('[VibeCraft] Error al guardar la skin:', storageError);
+        alert('❌ No se pudo guardar la skin. El almacenamiento local podría estar lleno.');
+      }
+    });
+
+    reader.addEventListener('error', () => {
+      console.error('[VibeCraft] FileReader error:', reader.error);
+      alert('❌ Error al leer el archivo. Intenta con otro PNG.');
+    });
+
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * Devuelve la skin guardada como Data URL, o null si no existe.
+ * Úsala en main.js / player.js para aplicar la textura al modelo.
+ * @returns {string|null}
+ */
+export function getSavedSkin() {
+  return localStorage.getItem('vibe_skin');
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  🚀  INICIALIZACIÓN PÚBLICA
 // ═══════════════════════════════════════════════════════════════
 
@@ -197,20 +268,16 @@ function setSlot(index) {
  *   1. Conecta overlay ↔ PointerLockControls
  *   2. Construye los slots del Hotbar con sus iconos
  *   3. Registra teclas 1-9 para cambiar el slot activo
+ *   4. Inicializa el sistema de carga de skins
  *
  * @param {object} controls — PointerLockControls
  */
 export function initUI(controls) {
   // Overlay: se muestra al desbloquear el puntero (ESC), se oculta al bloquear
-  // CAMBIO: eliminado el listener de clic en overlayEl — ya no se cierra clicando
-  // en cualquier parte del overlay. Ahora solo "Volver al juego" o ESC lo cierran.
   controls.addEventListener('lock',   () => { overlayEl.style.display = 'none'; });
   controls.addEventListener('unlock', () => { overlayEl.style.display = 'flex'; });
 
   // ── btn-resume: "Volver al juego" → reactiva el PointerLock ────
-  //  Equivalente al clic que había en todo el overlay, pero ahora
-  //  acotado al botón específico para no capturar clics accidentales
-  //  en el fondo semitransparente del menú de pausa.
   document.getElementById('btn-resume').addEventListener('click', () => {
     controls.lock();
   });
@@ -228,18 +295,16 @@ export function initUI(controls) {
   });
 
   // ── Scroll del ratón: navega el Hotbar de forma circular ──────────
-  // deltaY > 0 → scroll abajo → slot siguiente (hacia la derecha)
-  // deltaY < 0 → scroll arriba → slot anterior (hacia la izquierda)
-  // El módulo ((n % len) + len) % len garantiza wrap circular en ambas
-  // direcciones sin producir índices negativos.
   document.addEventListener('wheel', (e) => {
     e.preventDefault();
     const len  = HOTBAR_BLOCKS.length;
     const dir  = e.deltaY > 0 ? 1 : -1;
     const next = ((currentSlot + dir) % len + len) % len;
     setSlot(next);
-  }, { passive: false }); // passive:false necesario para poder llamar preventDefault
+  }, { passive: false });
 
+  // ── Skin uploader ─────────────────────────────────────────────
+  initSkinUploader();
 }
 
 // ═══════════════════════════════════════════════════════════════
