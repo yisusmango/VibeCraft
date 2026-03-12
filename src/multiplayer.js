@@ -4,7 +4,7 @@
 //  Responsabilidades:
 //    1. Conectarse al servidor Socket.io en localhost:3000
 //    2. Enviar el estado del jugador local (pos + rot) con throttle
-//    3. Mantener mallas de otros jugadores en la escena (otherPlayers Map)
+//    3. Mantener modelos articulados de otros jugadores (otherPlayers Map)
 //    4. Sincronizar eventos de bloque recibidos desde el servidor
 //    5. Limpiar mallas al desconectarse un jugador
 //    6. Sincronizar skin propia al conectarse y recibir skins remotas
@@ -20,92 +20,72 @@
 //    Recibe ← 'playerLeft'        { id }                    (al desconectarse alguien)
 //
 //  REPRESENTACIÓN DE OTROS JUGADORES:
-//    Cubo 0.6×1.8×0.6 (mismo AABB que el jugador local) con
-//    MeshLambertMaterial verde oscuro y borde negro. En la capa final
-//    esto se reemplazaría por un modelo con animaciones, pero para
-//    el prototipo es suficientemente reconocible sin coste artístico.
+//    THREE.Group generado por createPlayerModel() en SkinModel.js.
+//    Si el jugador tiene skin (Data URL Base64 PNG) se aplica la
+//    textura con UVs remapeados al atlas Minecraft 64×64.
+//    Si no tiene skin, se usa material verde de fallback.
 //
 //  THROTTLE DE ENVÍO:
 //    sendUpdate() acumula el tiempo transcurrido y solo emite un
 //    paquete cada SEND_INTERVAL ms (100 ms = 10 Hz). Esto reduce el
-//    tráfico de red ~60× frente a enviar cada frame a 60 fps, sin
-//    impacto perceptible en la suavidad de movimiento de los demás
-//    (interpolamos en updateOtherPlayers).
+//    tráfico de red ~60× frente a enviar cada frame a 60 fps.
 //
 //  INTERPOLACIÓN:
-//    Cada entrada en otherPlayers guarda { mesh, targetPos, targetRotY, skin }.
+//    Cada entrada en otherPlayers guarda { group, targetPos, targetRotY, skin }.
 //    updateOtherPlayers() hace lerp suave hacia targetPos/targetRotY
-//    con factor LERP_FACTOR=0.2 por frame. Esto elimina el "jitter" de
-//    paquetes a 10 Hz cuando se visualizan a 60 fps.
+//    con factor LERP_FACTOR=0.2 por frame.
 // ═══════════════════════════════════════════════════════════════
 
 import * as THREE from 'three';
 import { addBlock, removeBlock, buildChunkMesh, setNoiseSeed } from './world.js';
+import { createPlayerModel } from './SkinModel.js';
 
 // ── Configuración ────────────────────────────────────────────────
-const SERVER_URL     = 'http://localhost:3000';
-const SEND_INTERVAL  = 100;   // ms entre paquetes playerUpdate (~10 Hz)
-const LERP_FACTOR    = 0.2;   // factor de interpolación por frame (0=sin mover, 1=snap)
-
-// ── Geometría y material compartidos para todas las mallas remotas ─
-//  Creados una sola vez, reutilizados en todas las instancias.
-//  Dimensiones = AABB del jugador local (CONFIG.PLAYER_WIDTH × PLAYER_HEIGHT).
-const _playerGeo = new THREE.BoxGeometry(0.6, 1.8, 0.6);
-const _playerMat = new THREE.MeshLambertMaterial({ color: 0x2e7d32 });  // verde bosque
+const SERVER_URL    = 'http://localhost:3000';
+const SEND_INTERVAL = 100;   // ms entre paquetes playerUpdate (~10 Hz)
+const LERP_FACTOR   = 0.2;   // factor de interpolación por frame
 
 // ── Estado del módulo ────────────────────────────────────────────
-let _socket      = null;   // instancia de Socket.io client
-let _scene       = null;   // referencia a la escena Three.js
-let _myId        = null;   // socket.id asignado por el servidor
-let _sendTimer   = 0;      // acumulador de tiempo para el throttle
+let _socket    = null;
+let _scene     = null;
+let _myId      = null;
+let _sendTimer = 0;
 
-// otherPlayers: Map<socketId, { mesh, targetPos, targetRotY, skin }>
-//  • skin — Data URL Base64 PNG guardada en memoria.
-//           null si el jugador remoto no tiene skin cargada.
-//           Se actualiza vía worldInit (snapshot) o playerSkinUpdated (tiempo real).
-//           La aplicación a la malla 3D queda pendiente para la siguiente fase.
+// otherPlayers: Map<socketId, { group, targetPos, targetRotY, skin }>
+//   group      — THREE.Group devuelto por createPlayerModel()
+//   targetPos  — Vector3 objetivo para lerp de posición
+//   targetRotY — ángulo Y objetivo para lerp de rotación (yaw)
+//   skin       — Data URL Base64 PNG | null
 const otherPlayers = new Map();
 
-// ── Vector temporal para lerp (evita GC) ───────────────────────
-const _lerpPos = new THREE.Vector3();
-
 // ═══════════════════════════════════════════════════════════════
-//  🔨  _createPlayerMesh — crea la malla de un jugador remoto
-//  ⚠️  INTACTA — no modificar en esta fase. La aplicación de skin
-//      a la textura del cubo se implementará en la siguiente iteración.
+//  🔨  _createPlayerMesh — crea el modelo articulado de un jugador
+//
+//  Delega en createPlayerModel(skinSource) de SkinModel.js para
+//  obtener un THREE.Group con UVs de atlas Minecraft 64×64.
+//  Añade el grupo a la escena y lo devuelve.
+//
+//  @param {THREE.Scene}  scene
+//  @param {string|null}  skinSource  — Data URL o null
+//  @returns {THREE.Group}
 // ═══════════════════════════════════════════════════════════════
 
-// Material negro reutilizado para bordes + marcador frontal
-const _blackMat  = new THREE.MeshBasicMaterial({ color: 0x000000 });
+function _createPlayerMesh(scene, skinSource) {
+  const group = createPlayerModel(skinSource);
+  scene.add(group);
+  return group;
+}
 
-function _createPlayerMesh(scene) {
-  const mesh = new THREE.Mesh(_playerGeo, _playerMat);
-
-  // Borde negro con EdgesGeometry para dar contraste estilo voxel
-  const edges = new THREE.LineSegments(
-    new THREE.EdgesGeometry(_playerGeo),
-    new THREE.LineBasicMaterial({ color: 0x000000 })
-  );
-  mesh.add(edges);
-
-  // ── Marcador Direccional ────────────────────────────────────────
-  //  Pequeño cubo negro centrado en la cara FRONTAL del avatar (-Z local).
-  //  En Three.js los objetos miran hacia -Z por defecto, igual que la
-  //  cámara de PointerLockControls → el marcador apunta en la dirección
-  //  a la que mira el jugador remoto, confirmando que la rotación Y
-  //  está correctamente sincronizada.
-  //
-  //  Posición: x=0 (centrado), y=+0.4 (altura de los ojos ≈ EYE_HEIGHT-1),
-  //            z=-0.31 (pegado a la cara frontal, mitad grosor = 0.31).
-  const noseGeo  = new THREE.BoxGeometry(0.18, 0.18, 0.12);
-  const nose     = new THREE.Mesh(noseGeo, _blackMat);
-  nose.position.set(0, 0.4, -0.31);
-  mesh.add(nose);
-
-  mesh.castShadow    = true;
-  mesh.receiveShadow = false;
-  scene.add(mesh);
-  return mesh;
+// ── Helper: liberar toda la memoria de un grupo de jugador ───────
+//  Recorre el grupo y dispone geometría, textura y material de
+//  cada Mesh hijo para evitar fugas de memoria en GPU.
+function _disposeGroup(group) {
+  group.traverse((child) => {
+    if (!child.isMesh) return;
+    child.geometry.dispose();
+    if (child.material.map) child.material.map.dispose();
+    child.material.dispose();
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -113,15 +93,6 @@ function _createPlayerMesh(scene) {
 //  @param {THREE.Scene} scene
 // ═══════════════════════════════════════════════════════════════
 
-/**
- * initMultiplayer — conecta al servidor y retorna una Promise que se
- * resuelve ÚNICAMENTE cuando el servidor envía 'worldInit' con el
- * SERVER_SEED. Esto garantiza que world.js ya tiene la semilla correcta
- * antes de que main.js genere el primer chunk.
- *
- * Si el servidor no está disponible, la Promise se rechaza y main.js
- * puede mostrar un error sin bloquear el resto del juego.
- */
 export function initMultiplayer(scene) {
   _scene = scene;
 
@@ -136,7 +107,7 @@ export function initMultiplayer(scene) {
         // ── connect: enviar skin propia si existe en localStorage ──────
         //  Se emite justo tras la conexión TCP, antes de recibir worldInit,
         //  para que el servidor ya tenga la skin en playerState cuando
-        //  otros jugadores pidan el snapshot (worldInit).
+        //  otros jugadores soliciten el snapshot.
         _socket.on('connect', () => {
           _myId = _socket.id;
           console.info(`[VibeCraft MP] Conectado al servidor. ID: ${_myId}`);
@@ -156,8 +127,8 @@ export function initMultiplayer(scene) {
         });
 
         // ── worldInit: recibir semilla + snapshot completo (con skins) ──
-        //  players[] ahora puede incluir { id, pos, rot, skin } donde
-        //  skin es Data URL o null. _upsertPlayer guarda skin en el mapa.
+        //  players[] incluye { id, pos, rot, skin } donde skin es Data
+        //  URL o null. _upsertPlayer crea el modelo con la skin correcta.
         _socket.on('worldInit', ({ seed, players }) => {
           setNoiseSeed(seed);
           console.info(`[VibeCraft MP] Semilla recibida: ${seed.toFixed(8)} — terreno listo.`);
@@ -172,25 +143,37 @@ export function initMultiplayer(scene) {
         });
 
         // ── Skin de un jugador remoto actualizada en tiempo real ──────
-        //  Llega cuando otro jugador carga una nueva skin estando ya
-        //  conectado. Buscamos su entrada en el mapa y guardamos el dato.
-        //  La aplicación a la malla 3D (textura) se hará en la siguiente fase.
+        //  Destruimos el modelo antiguo y creamos uno nuevo con la
+        //  textura actualizada, preservando posición y rotación actuales.
         _socket.on('playerSkinUpdated', ({ id, skin }) => {
-          if (id === _myId) return;  // no procesar eco propio
+          if (id === _myId) return;
 
           const entry = otherPlayers.get(id);
-          if (entry) {
-            entry.skin = skin;
-            console.info(`[VibeCraft MP] Skin recibida para jugador ${id}.`);
-          } else {
-            // El jugador aún no tiene entrada en el mapa (race condition rara).
-            // Se ignorará; cuando llegue su playerUpdate se creará con skin null
-            // y la siguiente actualización de skin lo corregirá.
+          if (!entry) {
             console.warn(`[VibeCraft MP] playerSkinUpdated para jugador desconocido: ${id}`);
+            return;
           }
+
+          // Guardar pose actual antes de destruir el grupo viejo
+          const pos  = entry.group.position.clone();
+          const rotY = entry.group.rotation.y;
+
+          // Destruir modelo antiguo y liberar recursos GPU
+          _scene.remove(entry.group);
+          _disposeGroup(entry.group);
+
+          // Crear modelo nuevo con la skin actualizada
+          entry.skin  = skin;
+          entry.group = _createPlayerMesh(_scene, skin);
+          entry.group.position.copy(pos);
+          entry.group.rotation.y = rotY;
+
+          console.info(`[VibeCraft MP] Skin actualizada y modelo reconstruido para ${id}.`);
         });
 
         // ── Sincronización de bloques ─────────────────────────────────
+        //  Aplica el delta recibido en el blockMap local y reconstruye
+        //  la malla del chunk afectado.
         _socket.on('blockUpdate', (data) => {
           const CS = 16;  // CONFIG.CHUNK_SIZE — inline para evitar import circular
           if (data.action === 'add') {
@@ -208,8 +191,8 @@ export function initMultiplayer(scene) {
         _socket.on('playerLeft', ({ id }) => {
           const entry = otherPlayers.get(id);
           if (entry) {
-            _scene.remove(entry.mesh);
-            entry.mesh.geometry.dispose();
+            _scene.remove(entry.group);
+            _disposeGroup(entry.group);
             otherPlayers.delete(id);
             console.info(`[VibeCraft MP] Jugador ${id} se ha ido.`);
           }
@@ -241,23 +224,26 @@ function _upsertPlayer(data) {
   let entry = otherPlayers.get(data.id);
 
   if (!entry) {
-    // Primera vez que vemos a este jugador: crear malla y registrar.
-    // Guardamos skin desde el snapshot inicial (worldInit) si viene.
-    const mesh = _createPlayerMesh(_scene);
+    // Primera vez que vemos a este jugador: crear modelo y registrar.
+    // Pasamos skin al constructor para que la textura se aplique
+    // directamente desde el snapshot de worldInit si viene incluida.
+    const skin     = data.skin ?? null;
+    const group    = _createPlayerMesh(_scene, skin);
     const initRotY = data.rot?.y ?? 0;
-    mesh.position.set(data.pos.x, data.pos.y, data.pos.z);
-    mesh.rotation.y = initRotY;
+    group.position.set(data.pos.x, data.pos.y, data.pos.z);
+    group.rotation.y = initRotY;
     entry = {
-      mesh,
+      group,
       targetPos:  new THREE.Vector3(data.pos.x, data.pos.y, data.pos.z),
       targetRotY: initRotY,
-      skin:       data.skin ?? null,   // null si el jugador no tiene skin
+      skin,
     };
     otherPlayers.set(data.id, entry);
-    console.info(`[VibeCraft MP] Nuevo jugador: ${data.id}${entry.skin ? ' (con skin)' : ''}`);
+    console.info(`[VibeCraft MP] Nuevo jugador: ${data.id}${skin ? ' (con skin)' : ''}`);
   } else {
-    // Actualizar target para interpolación.
-    // Solo actualizamos skin si viene en el payload (preservar la existente si no).
+    // Actualizar target para la interpolación en updateOtherPlayers().
+    // Solo sobreescribimos skin si viene en el payload — así no borramos
+    // una skin ya válida con un playerUpdate que no trae ese campo.
     entry.targetPos.set(data.pos.x, data.pos.y, data.pos.z);
     entry.targetRotY = data.rot?.y ?? entry.targetRotY;
     if ('skin' in data) {
@@ -271,6 +257,9 @@ function _upsertPlayer(data) {
 //  ─────────────────────────────────────────────────────────────
 //  @param {THREE.Vector3} pos     — posición del jugador local
 //  @param {THREE.Camera}  camera  — cámara (para extraer rotación)
+//
+//  THROTTLE: solo emite si han pasado ≥ SEND_INTERVAL ms desde el
+//  último envío. _sendTimer se actualiza con performance.now().
 // ═══════════════════════════════════════════════════════════════
 
 export function sendUpdate(pos, camera) {
@@ -280,6 +269,8 @@ export function sendUpdate(pos, camera) {
   if (now - _sendTimer < SEND_INTERVAL) return;
   _sendTimer = now;
 
+  // Extraer yaw (Y) del yaw object y pitch (X) de la cámara hija,
+  // replicando la misma jerarquía que PointerLockControls usa internamente.
   const yawObj = camera.parent;
   _socket.emit('playerUpdate', {
     id:  _myId,
@@ -294,6 +285,7 @@ export function sendUpdate(pos, camera) {
 // ═══════════════════════════════════════════════════════════════
 //  📡  sendBlockUpdate — avisar al servidor de un cambio de bloque
 //  ─────────────────────────────────────────────────────────────
+//  Llamar desde interaction.js después de addBlock/removeBlock.
 //  @param {'add'|'remove'} action
 //  @param {number} x, y, z
 //  @param {string} [type]
@@ -310,15 +302,23 @@ export function sendBlockUpdate(action, x, y, z, type = null, normal = null) {
 
 // ═══════════════════════════════════════════════════════════════
 //  🔄  updateOtherPlayers — interpolar posiciones (llamar cada frame)
+//  ─────────────────────────────────────────────────────────────
+//  Hace lerp de la posición actual de cada grupo hacia targetPos,
+//  y normaliza + lerp del ángulo Y. El factor LERP_FACTOR=0.2
+//  suaviza el movimiento a 10 Hz hasta que parezca 60 Hz.
 // ═══════════════════════════════════════════════════════════════
 
 export function updateOtherPlayers() {
   for (const entry of otherPlayers.values()) {
-    entry.mesh.position.lerp(entry.targetPos, LERP_FACTOR);
+    // Interpolar posición
+    entry.group.position.lerp(entry.targetPos, LERP_FACTOR);
 
+    // Interpolar rotación Y tomando el camino angular más corto.
+    // ((dy % 2π) + 3π) % 2π - π garantiza resultado en [-π, +π]
+    // independientemente del signo de dy (fix para JS donde % preserva signo).
     const TAU    = 2 * Math.PI;
-    const dy     = entry.targetRotY - entry.mesh.rotation.y;
+    const dy     = entry.targetRotY - entry.group.rotation.y;
     const dyNorm = ((dy % TAU) + 3 * Math.PI) % TAU - Math.PI;
-    entry.mesh.rotation.y += dyNorm * LERP_FACTOR;
+    entry.group.rotation.y += dyNorm * LERP_FACTOR;
   }
 }
