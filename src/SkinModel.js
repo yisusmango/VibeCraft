@@ -103,10 +103,10 @@ function remapUVs(geo, faceUVs) {
     //   v2 (top-left)     = (uMin, vMax)
     //   v3 (top-right)    = (uMax, vMax)
     const corners = [
-      [uMin, vMin],   // v0 bottom-left
-      [uMax, vMin],   // v1 bottom-right
-      [uMin, vMax],   // v2 top-left
-      [uMax, vMax],   // v3 top-right
+      [uMin, vMax],   // 0: top-left
+      [uMax, vMax],   // 1: top-right
+      [uMin, vMin],   // 2: bottom-left
+      [uMax, vMin],   // 3: bottom-right
     ];
 
     if (flipU) {
@@ -153,10 +153,10 @@ function mcFaceUVs(ox, oy, w, d, h) {
     { x0: ox + d,         y0: oy,      x1: ox + d + w,           y1: oy + d,     flipV: true  },
     // −Y  bottom  — ya coincide, sin flip
     { x0: ox + d + w,     y0: oy,      x1: ox + d + w + w,       y1: oy + d,     flipV: false },
-    // +Z  front   — U coincide izq→der con el atlas, sin flip
-    { x0: ox + d,         y0: oy + d,  x1: ox + d + w,           y1: oy + d + h, flipU: false },
-    // −Z  back    — ídem
+    // +Z  back    — el jugador mira hacia -Z, así que +Z es la espalda
     { x0: ox + d + w + d, y0: oy + d,  x1: ox + d + w + d + w,   y1: oy + d + h, flipU: false },
+    // −Z  front   — -Z es la cara/frente del jugador
+    { x0: ox + d,         y0: oy + d,  x1: ox + d + w,           y1: oy + d + h, flipU: false },
   ];
 }
 
@@ -166,8 +166,8 @@ const UV_HEAD = mcFaceUVs(0,  0,  8, 8, 8);    // cabeza  8×8×8   @ (0,0)
 const UV_BODY = mcFaceUVs(16, 16, 8, 4, 12);   // torso   8×4×12  @ (16,16)
 const UV_LEGR = mcFaceUVs(0,  16, 4, 4, 12);   // pierna derecha  @ (0,16)
 const UV_LEGL = mcFaceUVs(16, 48, 4, 4, 12);   // pierna izq (segunda capa) @ (16,48)
-const UV_ARMR = mcFaceUVs(40, 16, 4, 4, 12);   // brazo derecho   @ (40,16)
-const UV_ARML = mcFaceUVs(32, 48, 4, 4, 12);   // brazo izq (segunda capa)  @ (32,48)
+const UV_ARMR = mcFaceUVs(40, 16, 3, 4, 12);   // brazo derecho   @ (40,16)
+const UV_ARML = mcFaceUVs(32, 48, 3, 4, 12);   // brazo izq (segunda capa)  @ (32,48)
 
 // ═══════════════════════════════════════════════════════════════
 //  createPlayerModel(skinSource) → THREE.Group
@@ -194,7 +194,7 @@ export function createPlayerModel(skinSource) {
     tex.magFilter  = THREE.NearestFilter;
     tex.minFilter  = THREE.NearestFilter;
     tex.colorSpace = THREE.SRGBColorSpace;
-    mat = new THREE.MeshLambertMaterial({ map: tex, transparent: true, alphaTest: 0.1 });
+    mat = new THREE.MeshLambertMaterial({ map: tex, transparent: false });
   } else {
     mat = new THREE.MeshLambertMaterial({ color: 0x2e7d32 });  // verde fallback
   }
@@ -217,7 +217,7 @@ export function createPlayerModel(skinSource) {
   const HEAD_W = 0.50, HEAD_H = 0.50, HEAD_D = 0.50;
   const BODY_W = 0.50, BODY_H = 0.75, BODY_D = 0.25;
   const LEG_W  = 0.25, LEG_H  = 0.75, LEG_D  = 0.25;
-  const ARM_W  = 0.25, ARM_H  = 0.75, ARM_D  = 0.25;
+  const ARM_W  = 0.1875, ARM_H  = 0.75, ARM_D  = 0.25;
 
   // Distribución Y (origen = suelo de las piernas):
   //   piernas : [0.00  … 0.75]
