@@ -179,10 +179,26 @@ const UV_ARML = mcFaceUVs(32, 48, 3, 4, 12);   // brazo izq (segunda capa)  @ (3
 //    Cabeza  : 0.50 × 0.50 × 0.50   (8px × 0.0625)
 //    Torso   : 0.50 × 0.75 × 0.25   (8×12×4 px)
 //    Pierna  : 0.25 × 0.75 × 0.25   (4×12×4 px)
-//    Brazo   : 0.25 × 0.75 × 0.25   (4×12×4 px)
+//    Brazo   : 0.1875×0.75×0.25     (3×12×4 px — formato Slim/Alex)
 //
 //  Altura total del grupo: 2.0u → escalado a 0.9 → 1.8u
 //  (coincide con el AABB del jugador local).
+//
+//  ─── SISTEMA DE PIVOTES ─────────────────────────────────────────
+//  La geometría de cada parte se desplaza con geo.translate() para
+//  que el origen local de la malla coincida con la articulación:
+//
+//    head  → pivot en cuello  (bottom):  geo.translate(0, +HEAD_H/2, 0)
+//            malla en Y=1.50  → geometría ocupa [1.50 … 2.00]
+//    body  → pivot en cadera  (bottom):  geo.translate(0, +BODY_H/2, 0)
+//            malla en Y=0.75  → geometría ocupa [0.75 … 1.50]
+//    legR/L→ pivot en cadera  (top):     geo.translate(0, -LEG_H/2,  0)
+//            malla en Y=0.75  → geometría ocupa [0.00 … 0.75]
+//    armR/L→ pivot en hombro  (top):     geo.translate(0, -ARM_H/2,  0)
+//            malla en Y=1.50  → geometría ocupa [0.75 … 1.50]
+//
+//  Los huesos se exponen en group.userData para animación externa:
+//    { head, body, armR, armL, legR, legL }
 // ═══════════════════════════════════════════════════════════════
 
 export function createPlayerModel(skinSource) {
@@ -202,46 +218,67 @@ export function createPlayerModel(skinSource) {
   // ── Grupo raíz ────────────────────────────────────────────────
   const group = new THREE.Group();
 
-  // ── Helper: construir una parte con BoxGeometry + UV remap ────
-  //  yOffset = posición del centro de la malla en Y local del grupo
-  function makePart(w, h, d, faceUVs, yOffset) {
+  // ── Helper: construir una parte con BoxGeometry + pivote + UV remap ──
+  //  pivotShiftY desplaza la geometría en Y para que el origen de la
+  //  malla quede en la articulación en lugar del centro geométrico:
+  //    +HEAD_H/2  → geometría sube → origen queda en el borde inferior (cuello)
+  //    -LEG_H/2   → geometría baja → origen queda en el borde superior (cadera)
+  //  posY es la posición final de la malla (la articulación) en Y del grupo.
+  function makePart(w, h, d, faceUVs, posY, pivotShiftY) {
     const geo = new THREE.BoxGeometry(w, h, d);
+    if (pivotShiftY !== 0) geo.translate(0, pivotShiftY, 0);
     remapUVs(geo, faceUVs);
     const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.y = yOffset;
+    mesh.position.y = posY;
     mesh.castShadow = true;
     return mesh;
   }
 
   // ── Medidas (unidades Three.js) ───────────────────────────────
-  const HEAD_W = 0.50, HEAD_H = 0.50, HEAD_D = 0.50;
-  const BODY_W = 0.50, BODY_H = 0.75, BODY_D = 0.25;
-  const LEG_W  = 0.25, LEG_H  = 0.75, LEG_D  = 0.25;
-  const ARM_W  = 0.1875, ARM_H  = 0.75, ARM_D  = 0.25;
+  const HEAD_W = 0.50,   HEAD_H = 0.50,  HEAD_D = 0.50;
+  const BODY_W = 0.50,   BODY_H = 0.75,  BODY_D = 0.25;
+  const LEG_W  = 0.25,   LEG_H  = 0.75,  LEG_D  = 0.25;
+  const ARM_W  = 0.1875, ARM_H  = 0.75,  ARM_D  = 0.25;   // Slim/Alex 3px
 
-  // Distribución Y (origen = suelo de las piernas):
-  //   piernas : [0.00  … 0.75]
-  //   torso   : [0.75  … 1.50]
-  //   cabeza  : [1.50  … 2.00]
-  //   brazos  : mismo rango Y que torso, desplazados en X
-  const head = makePart(HEAD_W, HEAD_H, HEAD_D, UV_HEAD, 1.50 + HEAD_H / 2);
-  const body = makePart(BODY_W, BODY_H, BODY_D, UV_BODY, 0.75 + BODY_H / 2);
-  const legR = makePart(LEG_W,  LEG_H,  LEG_D,  UV_LEGR, 0.00 + LEG_H  / 2);
-  const legL = makePart(LEG_W,  LEG_H,  LEG_D,  UV_LEGL, 0.00 + LEG_H  / 2);
-  const armR = makePart(ARM_W,  ARM_H,  ARM_D,  UV_ARMR, 0.75 + ARM_H  / 2);
-  const armL = makePart(ARM_W,  ARM_H,  ARM_D,  UV_ARML, 0.75 + ARM_H  / 2);
+  // ── Construcción de partes con pivotes en articulaciones ──────
+  //
+  //  head : pivot cuello  (bottom) → geo sube +HEAD_H/2 → malla en Y=1.50
+  //  body : pivot cadera  (bottom) → geo sube +BODY_H/2 → malla en Y=0.75
+  //  legs : pivot cadera  (top)    → geo baja -LEG_H/2  → malla en Y=0.75
+  //  arms : pivot hombro  (top)    → geo baja -ARM_H/2  → malla en Y=1.50
+  const head = makePart(HEAD_W, HEAD_H, HEAD_D, UV_HEAD, 1.50,        +HEAD_H / 2);
+  const body = makePart(BODY_W, BODY_H, BODY_D, UV_BODY, 0.75,        +BODY_H / 2);
+  const legR = makePart(LEG_W,  LEG_H,  LEG_D,  UV_LEGR, LEG_H,       -LEG_H  / 2);
+  const legL = makePart(LEG_W,  LEG_H,  LEG_D,  UV_LEGL, LEG_H,       -LEG_H  / 2);
+  const armR = makePart(ARM_W,  ARM_H,  ARM_D,  UV_ARMR, 0.75 + BODY_H, -ARM_H / 2);
+  const armL = makePart(ARM_W,  ARM_H,  ARM_D,  UV_ARML, 0.75 + BODY_H, -ARM_H / 2);
 
   // ── Desplazamientos X ─────────────────────────────────────────
-  //  Pierna/brazo derecho → +X  |  izquierdo → −X
-  legR.position.x =  (LEG_W  / 2) + 0.001;   // gap mínimo entre piernas
+  legR.position.x =  (LEG_W  / 2) + 0.001;
   legL.position.x = -(LEG_W  / 2) - 0.001;
   armR.position.x =  (BODY_W / 2) + (ARM_W / 2);
   armL.position.x = -(BODY_W / 2) - (ARM_W / 2);
+
+  // ── Nariz (marcador direccional) — hija de head ────────────────
+  //  La cabeza tiene ahora origen en el cuello (Y=0 local) y la
+  //  geometría se extiende de Y=0 a Y=HEAD_H=0.50.
+  //  La cara frontal está en Z=-(HEAD_D/2)=-0.25 (−Z es el frente).
+  //  Colocamos la nariz al 60% de la altura de la cabeza (nivel ojos).
+  const noseGeo = new THREE.BoxGeometry(0.10, 0.10, 0.08);
+  const noseMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+  const nose    = new THREE.Mesh(noseGeo, noseMat);
+  nose.position.set(0, HEAD_H * 0.60, -(HEAD_D / 2 + 0.04));
+  head.add(nose);
 
   group.add(head, body, legR, legL, armR, armL);
 
   // ── Escalar al AABB del jugador (altura 1.8u) ─────────────────
   group.scale.setScalar(0.9);
+
+  // ── Exponer huesos para animación externa ──────────────────────
+  //  multiplayer.js accede a estas referencias en updateOtherPlayers()
+  //  para aplicar walk swing y head pitch sin necesidad de buscar hijos.
+  group.userData = { head, body, armR, armL, legR, legL };
 
   return group;
 }
