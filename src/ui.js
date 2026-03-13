@@ -22,6 +22,12 @@ const elVY      = document.getElementById('svy');
 const elSG      = document.getElementById('sg');
 const overlayEl = document.getElementById('overlay');
 
+// ── Estado del chat ───────────────────────────────────────────────
+//  isChatting = true mientras el input de chat está abierto.
+//  Previene que controls.unlock() muestre el menú de pausa cuando
+//  el jugador pulsa T para abrir el chat.
+let isChatting = false;
+
 // ═══════════════════════════════════════════════════════════════
 //  🎒  HOTBAR — DEFINICIÓN DE SLOTS
 //  Modifica este array para reordenar o cambiar los bloques.
@@ -349,7 +355,9 @@ function initUsernameInput() {
 export function initUI(controls) {
   // Overlay: se muestra al desbloquear el puntero (ESC), se oculta al bloquear
   controls.addEventListener('lock',   () => { overlayEl.style.display = 'none'; });
-  controls.addEventListener('unlock', () => { overlayEl.style.display = 'flex'; });
+  // Si el chat está activo, el unlock fue causado por nosotros (tecla T)
+  // y NO debemos mostrar el menú de pausa.
+  controls.addEventListener('unlock', () => { if (!isChatting) overlayEl.style.display = 'flex'; });
 
   // ── btn-resume: "Volver al juego" → reactiva el PointerLock ────
   document.getElementById('btn-resume').addEventListener('click', () => {
@@ -359,8 +367,25 @@ export function initUI(controls) {
   // Hotbar
   buildHotbar();
 
-  // Teclas 1-9: cambian el slot activo
+  // ── Teclas: T (chat) + 1-9 (hotbar) ──────────────────────────
+  //  Un único listener unificado gestiona ambos grupos de teclas.
+  //  La guardia INPUT permite escribir en username-input sin activar
+  //  el hotbar. La rama T solo actúa si el PointerLock está activo.
   document.addEventListener('keydown', (e) => {
+    // Tecla T: abrir chat (solo si el jugador está en control)
+    if (e.code === 'KeyT' && controls.isLocked) {
+      e.preventDefault();
+      isChatting = true;
+      controls.unlock();
+      const input = document.getElementById('chat-input');
+      if (input) {
+        input.style.display = 'block';
+        setTimeout(() => input.focus(), 10);
+      }
+      return;
+    }
+
+    // Teclas 1-9: cambiar slot del hotbar
     if (document.activeElement.tagName === 'INPUT') return;
     const n = parseInt(e.key, 10);
     if (n >= 1 && n <= HOTBAR_BLOCKS.length) {
@@ -384,36 +409,29 @@ export function initUI(controls) {
   // ── Username input ────────────────────────────────────────────
   initUsernameInput();
 
-  // ── Chat: abrir con tecla T ───────────────────────────────────
-  //  Solo actúa si el PointerLock está activo (jugador en control).
-  //  e.preventDefault() evita que la 'T' se escriba en el input.
-  const chatContainer = document.getElementById('chat-container');
-  const chatInput     = document.getElementById('chat-input');
+  // ── Chat: cerrar con Enter / Escape ───────────────────────────
+  //  closeChat() limpia el input, lo oculta, resetea isChatting y
+  //  reactiva el PointerLock con un pequeño delay para que el evento
+  //  Escape no propague y abra el menú de pausa.
+  function closeChat(inputEl) {
+    inputEl.value = '';
+    inputEl.style.display = 'none';
+    isChatting = false;
+    // Delay de 10 ms: evita que Escape burbujee y dispare el menú de pausa
+    setTimeout(() => controls.lock(), 10);
+  }
 
-  document.addEventListener('keydown', (e) => {
-    if (e.code !== 'KeyT') return;
-    if (!controls.isLocked) return;   // ignorar si ya está en menú/chat
-    e.preventDefault();
-    controls.unlock();
-    if (chatContainer) chatContainer.style.display = 'flex';
-    if (chatInput)     chatInput.focus();
-  });
-
-  // ── Chat: enviar con Enter, cancelar con Escape ───────────────
-  if (chatInput) {
-    chatInput.addEventListener('keydown', (e) => {
+  const chatInputEl = document.getElementById('chat-input');
+  if (chatInputEl) {
+    chatInputEl.addEventListener('keydown', (e) => {
       if (e.code === 'Enter') {
-        e.preventDefault();
-        const msg = chatInput.value.trim();
-        if (msg) sendChatMessage(msg);
-        chatInput.value = '';
-        if (chatContainer) chatContainer.style.display = 'none';
-        controls.lock();
+        e.stopPropagation();
+        const val = e.target.value.trim();
+        if (val) sendChatMessage(val);
+        closeChat(e.target);
       } else if (e.code === 'Escape') {
-        e.preventDefault();
-        chatInput.value = '';
-        if (chatContainer) chatContainer.style.display = 'none';
-        controls.lock();
+        e.stopPropagation();
+        closeChat(e.target);
       }
     });
   }

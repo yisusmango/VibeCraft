@@ -94,9 +94,9 @@
 
   <div id="hotbar"></div>
 
-  <div id="chat-container" style="display: none; position: absolute; bottom: 20px; left: 20px; z-index: 1000; flex-direction: column; gap: 5px;">
-    <div id="chat-messages" style="max-height: 200px; overflow-y: auto; color: white; text-shadow: 1px 1px 0 #000; font-family: 'Courier New', monospace; font-size: 14px;"></div>
-    <input type="text" id="chat-input" placeholder="Escribe y presiona Enter..." maxlength="64" style="padding: 5px; font-family: 'Courier New', monospace;" />
+  <div id="chat-container" style="display: flex; position: absolute; bottom: 20px; left: 20px; z-index: 1000; flex-direction: column; gap: 5px; width: 400px; pointer-events: none;">
+    <div id="chat-messages" style="max-height: 200px; overflow-y: auto; color: white; text-shadow: 1px 1px 0 #000; font-family: 'Courier New', monospace; font-size: 14px; pointer-events: auto;"></div>
+    <input type="text" id="chat-input" placeholder="Escribe un mensaje..." maxlength="64" style="display: none; padding: 5px; font-family: 'Courier New', monospace; background: rgba(0,0,0,0.6); color: white; border: 1px solid #555; outline: none; pointer-events: auto;" />
   </div>
 
   <script type="module" src="./src/main.js"></script>
