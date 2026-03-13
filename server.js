@@ -25,6 +25,9 @@
 //  ├──────────────────────┼─────────────────────────────────────────────────────┤
 //  │ playerLeft           │ { id }                                              │
 //  │                      │  Server → todos, cuando un cliente se desconecta    │
+//  ├──────────────────────┼─────────────────────────────────────────────────────┤
+//  │ chatMessage          │ string (client→server) / { username, message }      │
+//  │                      │  Client → Server → io.emit a todos (incluso emisor) │
 //  └──────────────────────┴─────────────────────────────────────────────────────┘
 //
 //  DECISIONES DE DISEÑO:
@@ -188,6 +191,29 @@ io.on('connection', (socket) => {
     ) return;
 
     socket.broadcast.emit('blockUpdate', data);
+  });
+
+  // ── Chat Multijugador ─────────────────────────────────────────
+  //  El username se extrae de playerState (fuente de verdad del servidor)
+  //  para evitar spoofing: el cliente solo envía el texto del mensaje.
+  //  Se retransmite a TODOS los clientes (io.emit, no broadcast) para
+  //  que el emisor también vea su propio mensaje en el panel de chat.
+  socket.on('chatMessage', (msg) => {
+    // Validación básica: ignorar mensajes vacíos o que no sean texto
+    if (typeof msg !== 'string' || msg.trim().length === 0) return;
+
+    // Limitar a 64 caracteres (coincide con el maxlength del HTML)
+    const cleanMsg = msg.trim().substring(0, 64);
+
+    // Extraer el username de la fuente de la verdad (el servidor), previene spoofing.
+    // playerState es un Map → usar .get(), no indexación directa.
+    const player   = playerState.get(socket.id);
+    const username = (player?.username) ? player.username : 'Player';
+
+    console.info(`[VibeCraft] Chat de ${username}: ${cleanMsg}`);
+
+    // Retransmitir a TODOS los clientes conectados (incluyendo al emisor)
+    io.emit('chatMessage', { username, message: cleanMsg });
   });
 
   // ── Desconexión ────────────────────────────────────────────────
