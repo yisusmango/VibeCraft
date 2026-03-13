@@ -1,3 +1,5 @@
+import { sendChatMessage } from './multiplayer.js';
+
 // ═══════════════════════════════════════════════════════════════
 //  src/ui.js
 //  Responsabilidades:
@@ -6,6 +8,8 @@
 //    • Hotbar: 9 slots con iconos procedurales, selección 1-9
 //    • Exporta getCurrentBlockType() para interaction.js
 //    • Sistema de Skins: FileReader + localStorage (sin base de datos)
+//    • Chat multijugador: addChatMessage() + panel #chat-container
+//    • Sistema de Username: campo de texto con sanitización en tiempo real
 // ═══════════════════════════════════════════════════════════════
 
 // ── Referencias DOM fijas ────────────────────────────────────────
@@ -260,6 +264,39 @@ export function getSavedSkin() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  💬  SISTEMA DE CHAT — panel flotante en esquina inferior izquierda
+//  ─────────────────────────────────────────────────────────────
+//  addChatMessage() es llamada por multiplayer.js al recibir un
+//  evento 'chatMessage' del servidor. Añade el mensaje al panel
+//  y hace auto-scroll para mostrar siempre el más reciente.
+//
+//  El panel (#chat-container) se muestra/oculta con la tecla T.
+//  Mientras está visible, el PointerLock se libera para que el
+//  jugador pueda escribir. Enter envía y cierra; Escape cancela.
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Añade un mensaje al panel de chat con formato '[username]: message'.
+ * Crea el div, lo inserta en #chat-messages y hace auto-scroll.
+ * @param {string} username
+ * @param {string} message
+ */
+export function addChatMessage(username, message) {
+  const container = document.getElementById('chat-messages');
+  if (!container) return;
+
+  const div = document.createElement('div');
+  // Sanitizar para evitar inyección HTML — solo escapamos los caracteres críticos
+  const safeName = String(username).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const safeMsg  = String(message).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  div.innerHTML  = `<b>[${safeName}]</b>: ${safeMsg}`;
+  container.appendChild(div);
+
+  // Auto-scroll: mostrar siempre el mensaje más reciente
+  container.scrollTop = container.scrollHeight;
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  👤  SISTEMA DE USERNAME — localStorage + sanitización en tiempo real
 //  Flujo: al arrancar lee localStorage o genera 'Player'+random.
 //         El evento 'input' sanitiza y persiste en tiempo real.
@@ -324,6 +361,7 @@ export function initUI(controls) {
 
   // Teclas 1-9: cambian el slot activo
   document.addEventListener('keydown', (e) => {
+    if (document.activeElement.tagName === 'INPUT') return;
     const n = parseInt(e.key, 10);
     if (n >= 1 && n <= HOTBAR_BLOCKS.length) {
       e.preventDefault();
@@ -345,6 +383,40 @@ export function initUI(controls) {
 
   // ── Username input ────────────────────────────────────────────
   initUsernameInput();
+
+  // ── Chat: abrir con tecla T ───────────────────────────────────
+  //  Solo actúa si el PointerLock está activo (jugador en control).
+  //  e.preventDefault() evita que la 'T' se escriba en el input.
+  const chatContainer = document.getElementById('chat-container');
+  const chatInput     = document.getElementById('chat-input');
+
+  document.addEventListener('keydown', (e) => {
+    if (e.code !== 'KeyT') return;
+    if (!controls.isLocked) return;   // ignorar si ya está en menú/chat
+    e.preventDefault();
+    controls.unlock();
+    if (chatContainer) chatContainer.style.display = 'flex';
+    if (chatInput)     chatInput.focus();
+  });
+
+  // ── Chat: enviar con Enter, cancelar con Escape ───────────────
+  if (chatInput) {
+    chatInput.addEventListener('keydown', (e) => {
+      if (e.code === 'Enter') {
+        e.preventDefault();
+        const msg = chatInput.value.trim();
+        if (msg) sendChatMessage(msg);
+        chatInput.value = '';
+        if (chatContainer) chatContainer.style.display = 'none';
+        controls.lock();
+      } else if (e.code === 'Escape') {
+        e.preventDefault();
+        chatInput.value = '';
+        if (chatContainer) chatContainer.style.display = 'none';
+        controls.lock();
+      }
+    });
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════

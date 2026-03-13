@@ -18,6 +18,8 @@
 //    Recibe ← 'playerProfileUpdated'   { id, skin, username }    (perfil de un jugador actualizado)
 //    Recibe ← 'blockUpdate'            { action, x,y,z, type, normal }
 //    Recibe ← 'playerLeft'             { id }                    (al desconectarse alguien)
+//    Recibe ← 'chatMessage'            { username, message }     (mensaje de otro jugador)
+//    Emite  → 'chatMessage'            string                    (mensaje del jugador local)
 //
 //  REPRESENTACIÓN DE OTROS JUGADORES:
 //    THREE.Group generado por createPlayerModel() en SkinModel.js.
@@ -39,6 +41,7 @@
 import * as THREE from 'three';
 import { addBlock, removeBlock, buildChunkMesh, setNoiseSeed } from './world.js';
 import { createPlayerModel } from './SkinModel.js';
+import { addChatMessage } from './ui.js';
 
 // ── Configuración ────────────────────────────────────────────────
 const SERVER_URL    = 'http://localhost:3000';
@@ -147,7 +150,9 @@ export function initMultiplayer(scene) {
         _socket.on('worldInit', ({ seed, players }) => {
           setNoiseSeed(seed);
           console.info(`[VibeCraft MP] Semilla recibida: ${seed.toFixed(8)} — terreno listo.`);
-          players.forEach(data => _upsertPlayer(data));
+          players.forEach(data => {
+            if (data.id !== _myId) _upsertPlayer(data);
+          });
           resolve(seed);
         });
 
@@ -163,9 +168,18 @@ export function initMultiplayer(scene) {
         _socket.on('playerProfileUpdated', ({ id, skin, username }) => {
           if (id === _myId) return;
 
-          const entry = otherPlayers.get(id);
+          let entry = otherPlayers.get(id);
           if (!entry) {
-            console.warn(`[VibeCraft MP] playerProfileUpdated para jugador desconocido: ${id}`);
+            // Condición de carrera: playerProfileUpdated llegó antes que el primer
+            // playerUpdate. Creamos un jugador temporal oculto (Y=-1000) con el
+            // perfil correcto; cuando llegue playerUpdate lo reposicionará.
+            _upsertPlayer({
+              id,
+              pos: { x: 0, y: -1000, z: 0 },
+              rot: { x: 0, y: 0 },
+              skin,
+              username,
+            });
             return;
           }
 
@@ -219,6 +233,13 @@ export function initMultiplayer(scene) {
             otherPlayers.delete(id);
             console.info(`[VibeCraft MP] Jugador ${id} se ha ido.`);
           }
+        });
+
+        // ── Mensaje de chat recibido ──────────────────────────────────
+        //  Retransmitido por el servidor desde otro jugador.
+        //  addChatMessage() añade el mensaje al panel de chat en la UI.
+        _socket.on('chatMessage', (data) => {
+          addChatMessage(data.username, data.message);
         });
 
         _socket.on('disconnect', () => {
@@ -405,6 +426,17 @@ export function sendBlockUpdate(action, x, y, z, type = null, normal = null) {
     action, x, y, z, type,
     normal: normal ? { x: normal.x, y: normal.y, z: normal.z } : null,
   });
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  📡  sendChatMessage — emitir un mensaje de chat al servidor
+//  ─────────────────────────────────────────────────────────────
+//  @param {string} msg — texto del mensaje (ya validado en la UI)
+// ═══════════════════════════════════════════════════════════════
+
+export function sendChatMessage(msg) {
+  if (!_socket?.connected) return;
+  _socket.emit('chatMessage', msg);
 }
 
 // ═══════════════════════════════════════════════════════════════
