@@ -12,12 +12,12 @@
 //  PROTOCOLO (ver server.js para el contrato completo):
 //    Emite  → 'playerUpdate'      { id, pos, rot }          (cada ~100 ms)
 //    Emite  → 'blockUpdate'       { action, x,y,z, type, normal }
-//    Emite  → 'updateSkin'        base64String              (al conectarse, si hay skin)
-//    Recibe ← 'worldInit'         { seed, players }         (snapshot inicial, incluye skins)
-//    Recibe ← 'playerUpdate'      { id, pos, rot }          (otros jugadores)
-//    Recibe ← 'playerSkinUpdated' { id, skin }              (skin de un jugador actualizada)
-//    Recibe ← 'blockUpdate'       { action, x,y,z, type, normal }
-//    Recibe ← 'playerLeft'        { id }                    (al desconectarse alguien)
+//    Emite  → 'updateProfile'          { skin, username }        (al conectarse)
+//    Recibe ← 'worldInit'              { seed, players }         (snapshot inicial, incluye skin+username)
+//    Recibe ← 'playerUpdate'           { id, pos, rot }          (otros jugadores)
+//    Recibe ← 'playerProfileUpdated'   { id, skin, username }    (perfil de un jugador actualizado)
+//    Recibe ← 'blockUpdate'            { action, x,y,z, type, normal }
+//    Recibe ← 'playerLeft'             { id }                    (al desconectarse alguien)
 //
 //  REPRESENTACIÓN DE OTROS JUGADORES:
 //    THREE.Group generado por createPlayerModel() en SkinModel.js.
@@ -51,7 +51,7 @@ let _scene     = null;
 let _myId      = null;
 let _sendTimer = 0;
 
-// otherPlayers: Map<socketId, { group, targetPos, targetRotY, targetRotX, walkPhase, skin }>
+// otherPlayers: Map<socketId, { group, targetPos, targetRotY, targetRotX, walkPhase, skin, username, sprite }>
 //   group      — THREE.Group devuelto por createPlayerModel()
 //   targetPos  — Vector3 objetivo para lerp de posición
 //   targetRotY — yaw de CÁMARA del jugador remoto (no el del cuerpo).
@@ -62,6 +62,8 @@ let _sendTimer = 0;
 //   targetRotX — pitch de cámara para el asentido vertical de la cabeza
 //   walkPhase  — acumulador del ciclo de caminata (radianes)
 //   skin       — Data URL Base64 PNG | null
+//   username   — string mostrado en el name tag flotante
+//   sprite     — THREE.Sprite del name tag (hijo del group)
 const otherPlayers = new Map();
 
 // ═══════════════════════════════════════════════════════════════
@@ -84,9 +86,17 @@ function _createPlayerMesh(scene, skinSource) {
 
 // ── Helper: liberar toda la memoria de un grupo de jugador ───────
 //  Recorre el grupo y dispone geometría, textura y material de
-//  cada Mesh hijo para evitar fugas de memoria en GPU.
+//  cada Mesh hijo. Los Sprite de name tag también se limpian:
+//  su material.map es un CanvasTexture que hay que liberar
+//  explícitamente para evitar fugas de memoria en GPU.
 function _disposeGroup(group) {
   group.traverse((child) => {
+    if (child.isSprite) {
+      // Name tag: liberar CanvasTexture + SpriteMaterial
+      if (child.material.map) child.material.map.dispose();
+      child.material.dispose();
+      return;
+    }
     if (!child.isMesh) return;
     child.geometry.dispose();
     if (child.material.map) child.material.map.dispose();
@@ -110,19 +120,18 @@ export function initMultiplayer(scene) {
           timeout: 5000,
         });
 
-        // ── connect: enviar skin propia si existe en localStorage ──────
+        // ── connect: enviar perfil propio (skin + username) al servidor ──
         //  Se emite justo tras la conexión TCP, antes de recibir worldInit,
-        //  para que el servidor ya tenga la skin en playerState cuando
+        //  para que el servidor ya tenga el perfil en playerState cuando
         //  otros jugadores soliciten el snapshot.
         _socket.on('connect', () => {
           _myId = _socket.id;
           console.info(`[VibeCraft MP] Conectado al servidor. ID: ${_myId}`);
 
-          const skin = localStorage.getItem('vibe_skin');
-          if (skin) {
-            _socket.emit('updateSkin', skin);
-            console.info('[VibeCraft MP] Skin propia enviada al servidor.');
-          }
+          const skin     = localStorage.getItem('vibe_skin')     ?? null;
+          const username = localStorage.getItem('vibe_username') ?? null;
+          _socket.emit('updateProfile', { skin, username });
+          console.info('[VibeCraft MP] Perfil propio enviado al servidor.');
         });
 
         // connect_error → rechazar la Promise para que await en main.js
@@ -148,15 +157,15 @@ export function initMultiplayer(scene) {
           _upsertPlayer(data);
         });
 
-        // ── Skin de un jugador remoto actualizada en tiempo real ──────
+        // ── Perfil de un jugador remoto actualizado en tiempo real ────
         //  Destruimos el modelo antiguo y creamos uno nuevo con la
-        //  textura actualizada, preservando posición y rotación actuales.
-        _socket.on('playerSkinUpdated', ({ id, skin }) => {
+        //  skin y/o username actualizados, preservando pose actual.
+        _socket.on('playerProfileUpdated', ({ id, skin, username }) => {
           if (id === _myId) return;
 
           const entry = otherPlayers.get(id);
           if (!entry) {
-            console.warn(`[VibeCraft MP] playerSkinUpdated para jugador desconocido: ${id}`);
+            console.warn(`[VibeCraft MP] playerProfileUpdated para jugador desconocido: ${id}`);
             return;
           }
 
@@ -164,17 +173,25 @@ export function initMultiplayer(scene) {
           const pos  = entry.group.position.clone();
           const rotY = entry.group.rotation.y;
 
-          // Destruir modelo antiguo y liberar recursos GPU
+          // Destruir modelo antiguo y liberar recursos GPU (incluyendo CanvasTexture del name tag)
           _scene.remove(entry.group);
           _disposeGroup(entry.group);
 
-          // Crear modelo nuevo con la skin actualizada
-          entry.skin  = skin;
-          entry.group = _createPlayerMesh(_scene, skin);
+          // Actualizar campos del perfil solo si vienen en el payload
+          if (skin     !== null && skin     !== undefined) entry.skin     = skin;
+          if (username !== null && username !== undefined) entry.username = username;
+
+          // Crear modelo nuevo con skin actualizada + nuevo name tag
+          entry.group = _createPlayerMesh(_scene, entry.skin);
           entry.group.position.copy(pos);
           entry.group.rotation.y = rotY;
 
-          console.info(`[VibeCraft MP] Skin actualizada y modelo reconstruido para ${id}.`);
+          // Regenerar name tag con el username actualizado
+          entry.sprite = _createNameTagSprite(entry.username);
+          entry.sprite.position.set(0, 2.2, 0);
+          entry.group.add(entry.sprite);
+
+          console.info(`[VibeCraft MP] Perfil actualizado y modelo reconstruido para ${id}.`);
         });
 
         // ── Sincronización de bloques ─────────────────────────────────
@@ -216,6 +233,67 @@ export function initMultiplayer(scene) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  🏷️  _createNameTagSprite — genera un Sprite con el nombre
+//  ─────────────────────────────────────────────────────────────
+//  Dibuja el username sobre un <canvas> en memoria, genera un
+//  CanvasTexture y devuelve un THREE.Sprite listo para añadir
+//  al grupo del jugador. El sprite usa transparencia, por lo que
+//  solo el texto (y su sombra) son visibles sobre el mundo 3D.
+//
+//  Tipografía: 'Press Start 2P' si ya está cargada en el DOM
+//  (la carga la página principal); si no, cae a Courier New.
+//
+//  @param {string} username
+//  @returns {THREE.Sprite}
+// ═══════════════════════════════════════════════════════════════
+
+function _createNameTagSprite(username) {
+  const CW = 256, CH = 64;   // dimensiones del canvas en píxeles
+
+  const canvas = document.createElement('canvas');
+  canvas.width  = CW;
+  canvas.height = CH;
+  const ctx = canvas.getContext('2d');
+
+  // Fondo semitransparente (pastilla oscura, estilo Minecraft)
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+  const pad = 8;
+  ctx.beginPath();
+  ctx.roundRect(pad, CH / 2 - 20, CW - pad * 2, 36, 6);
+  ctx.fill();
+
+  // Tipografía
+  const fontFace = document.fonts?.check('12px "Press Start 2P"')
+    ? '"Press Start 2P"'
+    : 'Courier New';
+  const fontSize = 20;
+  ctx.font      = `bold ${fontSize}px ${fontFace}`;
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+
+  // Contorno oscuro para legibilidad contra cielo y terreno
+  ctx.lineWidth   = 4;
+  ctx.strokeStyle = '#000000';
+  ctx.strokeText(username, CW / 2, CH / 2);
+
+  // Texto blanco
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(username, CW / 2, CH / 2);
+
+  // Textura y material
+  const texture  = new THREE.CanvasTexture(canvas);
+  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+  const sprite   = new THREE.Sprite(material);
+
+  // Escala en unidades Three.js: relación de aspecto 256:64 = 4:1
+  // → ancho 1.5u, alto 0.375u. Ajusta el primer valor para hacerlo mayor/menor.
+  sprite.scale.set(1.5, 0.375, 1);
+  sprite.renderOrder = 999;   // siempre visible, no oculto por otras mallas
+
+  return sprite;
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  🔄  _upsertPlayer — crear o actualizar un jugador remoto
 //  @param {{ id, pos:{x,y,z}, rot:{x,y}, skin?:string|null }} data
 //
@@ -234,10 +312,18 @@ function _upsertPlayer(data) {
     // Pasamos skin al constructor para que la textura se aplique
     // directamente desde el snapshot de worldInit si viene incluida.
     const skin     = data.skin ?? null;
+    const username = data.username ?? 'Player';
     const group    = _createPlayerMesh(_scene, skin);
     const initRotY = data.rot?.y ?? 0;
     group.position.set(data.pos.x, data.pos.y, data.pos.z);
     group.rotation.y = initRotY;
+
+    // Generar name tag flotante y añadirlo como hijo del grupo
+    // para que se mueva y rote solidariamente con el modelo.
+    const sprite = _createNameTagSprite(username);
+    sprite.position.set(0, 2.2, 0);   // sobre la cabeza (altura ~2u + margen)
+    group.add(sprite);
+
     entry = {
       group,
       targetPos:  new THREE.Vector3(data.pos.x, data.pos.y, data.pos.z),
@@ -245,19 +331,20 @@ function _upsertPlayer(data) {
       targetRotX: data.rot?.x ?? 0,   // pitch para el asentido de cabeza
       walkPhase:  0,                   // acumulador del ciclo de caminata
       skin,
+      username,
+      sprite,
     };
     otherPlayers.set(data.id, entry);
-    console.info(`[VibeCraft MP] Nuevo jugador: ${data.id}${skin ? ' (con skin)' : ''}`);
+    console.info(`[VibeCraft MP] Nuevo jugador: ${data.id} (${username})${skin ? ' (con skin)' : ''}`);
   } else {
     // Actualizar target para la interpolación en updateOtherPlayers().
-    // Solo sobreescribimos skin si viene en el payload — así no borramos
-    // una skin ya válida con un playerUpdate que no trae ese campo.
+    // Solo sobreescribimos skin/username si vienen en el payload — así no
+    // borramos valores ya válidos con un playerUpdate que no trae esos campos.
     entry.targetPos.set(data.pos.x, data.pos.y, data.pos.z);
     entry.targetRotY = data.rot?.y ?? entry.targetRotY;
     entry.targetRotX = data.rot?.x ?? entry.targetRotX;
-    if ('skin' in data) {
-      entry.skin = data.skin ?? null;
-    }
+    if ('skin' in data)     entry.skin     = data.skin     ?? null;
+    if ('username' in data) entry.username = data.username ?? entry.username;
   }
 }
 
