@@ -260,6 +260,43 @@ export function getSavedSkin() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  👤  SISTEMA DE USERNAME — localStorage + sanitización en tiempo real
+//  Flujo: al arrancar lee localStorage o genera 'Player'+random.
+//         El evento 'input' sanitiza y persiste en tiempo real.
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Devuelve el username guardado, o null si no existe todavía.
+ * Importado por multiplayer.js para incluirlo en updateProfile.
+ * @returns {string|null}
+ */
+export function getSavedUsername() {
+  return localStorage.getItem('vibe_username');
+}
+
+/**
+ * Inicializa el campo de nombre de usuario:
+ *   1. Rellena el input con el valor guardado o genera un nombre por defecto.
+ *   2. Sanitiza en tiempo real (solo a-z, A-Z, 0-9, _).
+ *   3. Persiste en localStorage en cada cambio.
+ */
+function initUsernameInput() {
+  const input = document.getElementById('username-input');
+  if (!input) return;
+
+  // Cargar valor guardado o generar uno por defecto
+  const saved = localStorage.getItem('vibe_username');
+  input.value = saved ?? `Player${Math.floor(Math.random() * 9000) + 1000}`;
+
+  // Sanitizar y persistir en cada pulsación de tecla
+  input.addEventListener('input', function () {
+    // Eliminar cualquier carácter que no sea alfanumérico o guión bajo
+    this.value = this.value.replace(/[^a-zA-Z0-9_]/g, '');
+    localStorage.setItem('vibe_username', this.value);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  🚀  INICIALIZACIÓN PÚBLICA
 // ═══════════════════════════════════════════════════════════════
 
@@ -305,6 +342,9 @@ export function initUI(controls) {
 
   // ── Skin uploader ─────────────────────────────────────────────
   initSkinUploader();
+
+  // ── Username input ────────────────────────────────────────────
+  initUsernameInput();
 }
 
 // ═══════════════════════════════════════════════════════════════

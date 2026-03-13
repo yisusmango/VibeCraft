@@ -17,11 +17,11 @@
 //  │ blockUpdate          │ { action:'add'|'remove', x,y,z, type, normal }      │
 //  │                      │  Client → Server → broadcast a todos los demás      │
 //  ├──────────────────────┼─────────────────────────────────────────────────────┤
-//  │ updateSkin           │ base64String (Data URL PNG)                         │
-//  │                      │  Client → Server: guarda skin en playerState        │
+//  │ updateProfile        │ { skin, username }                                  │
+//  │                      │  Client → Server: guarda perfil en playerState      │
 //  ├──────────────────────┼─────────────────────────────────────────────────────┤
-//  │ playerSkinUpdated    │ { id, skin }                                        │
-//  │                      │  Server → todos los demás, tras recibir updateSkin  │
+//  │ playerProfileUpdated │ { id, skin, username }                              │
+//  │                      │  Server → todos los demás, tras updateProfile       │
 //  ├──────────────────────┼─────────────────────────────────────────────────────┤
 //  │ playerLeft           │ { id }                                              │
 //  │                      │  Server → todos, cuando un cliente se desconecta    │
@@ -64,10 +64,11 @@ const PORT = process.env.PORT ?? 3000;
 app.use(express.static('.'));
 
 // ── Estado en memoria: mapa de jugadores conectados ──────────────
-//  playerState: Map<socketId, { id, pos, rot, skin, lastSeen }>
-//  • pos / rot  — para el snapshot inicial de posición.
-//  • skin       — Data URL Base64 PNG, o null si el jugador no tiene skin.
-//  • lastSeen   — timestamp del último playerUpdate recibido.
+//  playerState: Map<socketId, { id, pos, rot, skin, username, lastSeen }>
+//  • pos / rot   — para el snapshot inicial de posición.
+//  • skin        — Data URL Base64 PNG, o null si el jugador no tiene skin.
+//  • username    — string 1-16 chars [a-zA-Z0-9_], o null hasta recibirlo.
+//  • lastSeen    — timestamp del último playerUpdate recibido.
 const SERVER_SEED  = Math.random();
 const playerState  = new Map();
 
@@ -78,12 +79,13 @@ const playerState  = new Map();
 io.on('connection', (socket) => {
   console.log(`[VibeCraft] Jugador conectado: ${socket.id}  (total: ${io.engine.clientsCount})`);
 
-  // Inicializar entrada con skin null hasta que el cliente la envíe
+  // Inicializar entrada con skin y username null hasta que el cliente los envíe
   playerState.set(socket.id, {
     id:       socket.id,
     pos:      { x: 0, y: 0, z: 0 },
     rot:      { x: 0, y: 0 },
     skin:     null,
+    username: null,
     lastSeen: Date.now(),
   });
 
@@ -118,34 +120,59 @@ io.on('connection', (socket) => {
     socket.broadcast.emit('playerUpdate', data);
   });
 
-  // ── updateSkin ─────────────────────────────────────────────────
-  //  Payload: base64String — Data URL completa (data:image/png;base64,…)
-  //  Validación básica: debe ser string y comenzar con el prefijo PNG.
-  //  Límite de tamaño: 2 MB en caracteres Base64 (~1.5 MB imagen real).
-  //  Si no pasa la validación, se ignora silenciosamente.
-  socket.on('updateSkin', (base64Skin) => {
-    if (
-      typeof base64Skin !== 'string'                   ||
-      !base64Skin.startsWith('data:image/png;base64,') ||
-      base64Skin.length > 2 * 1024 * 1024
-    ) {
-      console.warn(`[VibeCraft] updateSkin inválida de ${socket.id} — ignorada.`);
-      return;
+  // ── updateProfile ──────────────────────────────────────────────
+  //  Payload: { skin, username }
+  //    skin     — Data URL Base64 PNG completa (data:image/png;base64,…) o null
+  //    username — string de 1-16 chars alfanuméricos/guión bajo, o null
+  //  Validaciones:
+  //    • skin debe empezar con el prefijo PNG y no superar 2 MB (si presente)
+  //    • username debe ser string de 1-16 chars (si presente)
+  //  Si algún campo no pasa la validación se ignora el mensaje completo.
+  socket.on('updateProfile', ({ skin, username } = {}) => {
+    // Validar skin si viene
+    if (skin !== null && skin !== undefined) {
+      if (
+        typeof skin !== 'string'                   ||
+        !skin.startsWith('data:image/png;base64,') ||
+        skin.length > 2 * 1024 * 1024
+      ) {
+        console.warn(`[VibeCraft] updateProfile: skin inválida de ${socket.id} — ignorada.`);
+        return;
+      }
     }
 
-    // Actualizar la skin en playerState preservando el resto del estado
+    // Validar username si viene
+    if (username !== null && username !== undefined) {
+      if (
+        typeof username !== 'string'     ||
+        username.length < 1              ||
+        username.length > 16             ||
+        !/^[a-zA-Z0-9_]+$/.test(username)
+      ) {
+        console.warn(`[VibeCraft] updateProfile: username inválido de ${socket.id} — ignorado.`);
+        return;
+      }
+    }
+
+    // Actualizar playerState preservando los campos no enviados
     const existing = playerState.get(socket.id);
     if (existing) {
-      existing.skin = base64Skin;
+      if (skin     !== null && skin     !== undefined) existing.skin     = skin;
+      if (username !== null && username !== undefined) existing.username = username;
       playerState.set(socket.id, existing);
     }
 
-    console.info(`[VibeCraft] Skin actualizada para ${socket.id} (${(base64Skin.length / 1024).toFixed(1)} KB)`);
+    console.info(
+      `[VibeCraft] Perfil actualizado para ${socket.id}` +
+      (username ? ` — username: ${username}` : '') +
+      (skin     ? ` — skin: ${(skin.length / 1024).toFixed(1)} KB` : ''),
+    );
 
-    // Notificar a todos los demás para que actualicen la malla del jugador
-    socket.broadcast.emit('playerSkinUpdated', {
-      id:   socket.id,
-      skin: base64Skin,
+    // Notificar a todos los demás para que actualicen modelo y name tag
+    socket.broadcast.emit('playerProfileUpdated', {
+      id: socket.id,
+      skin:     skin     ?? null,
+      username: username ?? null,
     });
   });
 
