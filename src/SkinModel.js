@@ -259,17 +259,6 @@ export function createPlayerModel(skinSource) {
   armR.position.x =  (BODY_W / 2) + (ARM_W / 2);
   armL.position.x = -(BODY_W / 2) - (ARM_W / 2);
 
-  // ── Nariz (marcador direccional) — hija de head ────────────────
-  //  La cabeza tiene ahora origen en el cuello (Y=0 local) y la
-  //  geometría se extiende de Y=0 a Y=HEAD_H=0.50.
-  //  La cara frontal está en Z=-(HEAD_D/2)=-0.25 (−Z es el frente).
-  //  Colocamos la nariz al 60% de la altura de la cabeza (nivel ojos).
-  const noseGeo = new THREE.BoxGeometry(0.10, 0.10, 0.08);
-  const noseMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
-  const nose    = new THREE.Mesh(noseGeo, noseMat);
-  nose.position.set(0, HEAD_H * 0.60, -(HEAD_D / 2 + 0.04));
-  head.add(nose);
-
   group.add(head, body, legR, legL, armR, armL);
 
   // ── Escalar al AABB del jugador (altura 1.8u) ─────────────────
