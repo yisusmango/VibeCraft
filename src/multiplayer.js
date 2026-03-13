@@ -51,10 +51,16 @@ let _scene     = null;
 let _myId      = null;
 let _sendTimer = 0;
 
-// otherPlayers: Map<socketId, { group, targetPos, targetRotY, skin }>
+// otherPlayers: Map<socketId, { group, targetPos, targetRotY, targetRotX, walkPhase, skin }>
 //   group      — THREE.Group devuelto por createPlayerModel()
 //   targetPos  — Vector3 objetivo para lerp de posición
-//   targetRotY — ángulo Y objetivo para lerp de rotación (yaw)
+//   targetRotY — yaw de CÁMARA del jugador remoto (no el del cuerpo).
+//                El cuerpo (group.rotation.y) se desacopla de este valor:
+//                sigue la cámara al caminar, pero en reposo solo rota
+//                si el ángulo de cuello supera ±45°. La cabeza
+//                (parts.head.rotation.y) absorbe el resto del giro.
+//   targetRotX — pitch de cámara para el asentido vertical de la cabeza
+//   walkPhase  — acumulador del ciclo de caminata (radianes)
 //   skin       — Data URL Base64 PNG | null
 const otherPlayers = new Map();
 
@@ -236,6 +242,8 @@ function _upsertPlayer(data) {
       group,
       targetPos:  new THREE.Vector3(data.pos.x, data.pos.y, data.pos.z),
       targetRotY: initRotY,
+      targetRotX: data.rot?.x ?? 0,   // pitch para el asentido de cabeza
+      walkPhase:  0,                   // acumulador del ciclo de caminata
       skin,
     };
     otherPlayers.set(data.id, entry);
@@ -246,6 +254,7 @@ function _upsertPlayer(data) {
     // una skin ya válida con un playerUpdate que no trae ese campo.
     entry.targetPos.set(data.pos.x, data.pos.y, data.pos.z);
     entry.targetRotY = data.rot?.y ?? entry.targetRotY;
+    entry.targetRotX = data.rot?.x ?? entry.targetRotX;
     if ('skin' in data) {
       entry.skin = data.skin ?? null;
     }
@@ -260,7 +269,17 @@ function _upsertPlayer(data) {
 //
 //  THROTTLE: solo emite si han pasado ≥ SEND_INTERVAL ms desde el
 //  último envío. _sendTimer se actualiza con performance.now().
+//
+//  EXTRACCIÓN DE ÁNGULOS — orden YXZ:
+//  camera.rotation usa el orden por defecto XYZ. Al mirar hacia el sur
+//  (>90°) ese orden produce Gimbal Lock e invierte el eje X, haciendo que
+//  el pitch se lea negativo cuando debería ser positivo.
+//  Descomponer el quaternion con orden YXZ da siempre yaw en .y y pitch
+//  real en .x, sin singularidades en ningún ángulo de visión.
 // ═══════════════════════════════════════════════════════════════
+
+// Euler reutilizable — evita allocar un objeto por frame (100 Hz × N jugadores).
+const _sendEuler = new THREE.Euler(0, 0, 0, 'YXZ');
 
 export function sendUpdate(pos, camera) {
   if (!_socket?.connected) return;
@@ -269,15 +288,16 @@ export function sendUpdate(pos, camera) {
   if (now - _sendTimer < SEND_INTERVAL) return;
   _sendTimer = now;
 
-  // Extraer yaw (Y) del yaw object y pitch (X) de la cámara hija,
-  // replicando la misma jerarquía que PointerLockControls usa internamente.
-  const yawObj = camera.parent;
+  // Descomponer el quaternion de la cámara en orden YXZ para obtener
+  // pitch (.x) y yaw (.y) correctos en todo el rango de rotación.
+  _sendEuler.setFromQuaternion(camera.quaternion);
+
   _socket.emit('playerUpdate', {
     id:  _myId,
     pos: { x: pos.x, y: pos.y, z: pos.z },
     rot: {
-      x: camera.rotation.x,
-      y: yawObj ? yawObj.rotation.y : 0,
+      x: _sendEuler.x,   // pitch real, sin inversión al mirar atrás
+      y: _sendEuler.y,   // yaw real,   sin Gimbal Lock
     },
   });
 }
@@ -301,24 +321,115 @@ export function sendBlockUpdate(action, x, y, z, type = null, normal = null) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  🔄  updateOtherPlayers — interpolar posiciones (llamar cada frame)
+//  normalizeAngle(a) → número en [-π, +π]
 //  ─────────────────────────────────────────────────────────────
-//  Hace lerp de la posición actual de cada grupo hacia targetPos,
-//  y normaliza + lerp del ángulo Y. El factor LERP_FACTOR=0.2
-//  suaviza el movimiento a 10 Hz hasta que parezca 60 Hz.
+//  El operador % de JS preserva el signo del dividendo, por lo que
+//  un ángulo negativo grande NO se normaliza correctamente con la
+//  fórmula simple (a % TAU - PI). Añadir 1.5*TAU antes del módulo
+//  garantiza que el operando sea positivo para cualquier entrada.
+//
+//  Ejemplos:
+//    normalizeAngle(-5) → -5 + 6π ≡ 1.28 rad (mod 2π) → -4.99 … NO
+//    normalizeAngle(-5) con 1.5*TAU → siempre en [-π, π]  ✓
+// ═══════════════════════════════════════════════════════════════
+
+const TAU = 2 * Math.PI;
+const normalizeAngle = (a) => ((a % TAU) + 1.5 * TAU) % TAU - Math.PI;
+
+// ═══════════════════════════════════════════════════════════════
+//  🔄  updateOtherPlayers — interpolar posiciones + animar huesos
+//  ─────────────────────────────────────────────────────────────
+//  Llamar cada frame desde el game loop de main.js.
+//
+//  ─── DECOUPLED HEAD YAW (rotación de cabeza desacoplada) ────────
+//
+//  El cuerpo (group.rotation.y) y la cabeza (parts.head.rotation.y)
+//  se gestionan de forma independiente, igual que en Minecraft Java:
+//
+//  Al CAMINAR (movedXZ > 0.001):
+//    El cuerpo interpola directamente hacia targetRotY (yaw cámara).
+//    La cabeza absorbe el residuo (≈ 0) con lerp rápido.
+//
+//  En REPOSO (movedXZ ≤ 0.001):
+//    El cuerpo NO rota a menos que |yawDiff| supere MAX_NECK (45°).
+//    Cuando lo supera, el objetivo del cuerpo se ajusta para mantener
+//    la diferencia en exactamente ±45°, y el cuerpo interpola hacia
+//    ese objetivo (da la sensación de que los hombros "se rinden").
+//    La cabeza gira el ángulo residual completo con lerp rápido (0.5),
+//    lo que produce el movimiento independiente característico de MC.
 // ═══════════════════════════════════════════════════════════════
 
 export function updateOtherPlayers() {
+  const MAX_NECK = Math.PI / 4;   // 45° — límite de tensión del cuello
+
   for (const entry of otherPlayers.values()) {
-    // Interpolar posición
+
+    // ── Distancia XZ recorrida en este frame ─────────────────────
+    //  Capturamos X/Z ANTES del lerp para medir el desplazamiento
+    //  real de la malla sin allocar un Vector3 extra por frame.
+    const prevX = entry.group.position.x;
+    const prevZ = entry.group.position.z;
+
     entry.group.position.lerp(entry.targetPos, LERP_FACTOR);
 
-    // Interpolar rotación Y tomando el camino angular más corto.
-    // ((dy % 2π) + 3π) % 2π - π garantiza resultado en [-π, +π]
-    // independientemente del signo de dy (fix para JS donde % preserva signo).
-    const TAU    = 2 * Math.PI;
-    const dy     = entry.targetRotY - entry.group.rotation.y;
-    const dyNorm = ((dy % TAU) + 3 * Math.PI) % TAU - Math.PI;
-    entry.group.rotation.y += dyNorm * LERP_FACTOR;
+    const movedXZ = Math.sqrt(
+      (entry.group.position.x - prevX) ** 2 +
+      (entry.group.position.z - prevZ) ** 2,
+    );
+
+    // ── Walk phase ────────────────────────────────────────────────
+    //  Acumula fase proporcional a la velocidad mientras se camina.
+    //  Decae exponencialmente al detenerse para volver a pose de reposo.
+    if (movedXZ > 0.001) {
+      entry.walkPhase += movedXZ * 12;   // ~paso natural a velocidad normal
+    } else {
+      entry.walkPhase *= 0.85;           // decay suave hacia 0
+    }
+
+    // ── Decoupled Head Yaw ────────────────────────────────────────
+    //  yawDiff: diferencia normalizada entre la mirada de cámara
+    //  y la orientación actual del cuerpo.
+    const yawDiff = normalizeAngle(entry.targetRotY - entry.group.rotation.y);
+
+    if (movedXZ > 0.001) {
+      // Caminando: cuerpo sigue la cámara con lerp normal.
+      entry.group.rotation.y += yawDiff * LERP_FACTOR;
+    } else {
+      // En reposo: el cuerpo solo cede si el cuello está demasiado girado.
+      if (Math.abs(yawDiff) > MAX_NECK) {
+        // Calcular el objetivo del cuerpo para que yawDiff quede en ±MAX_NECK.
+        // Si yawDiff > 0 (mirando a la derecha): bodyTarget = cámara - MAX_NECK
+        // Si yawDiff < 0 (mirando a la izquierda): bodyTarget = cámara + MAX_NECK
+        const sign       = yawDiff > 0 ? 1 : -1;
+        const bodyTarget = normalizeAngle(entry.targetRotY - sign * MAX_NECK);
+        const dBody      = normalizeAngle(bodyTarget - entry.group.rotation.y);
+        entry.group.rotation.y += dBody * LERP_FACTOR;
+      }
+      // Si |yawDiff| ≤ 45°: cuerpo quieto, la cabeza absorbe todo el giro.
+    }
+
+    // ── Rotación local de la cabeza (yaw residual) ───────────────
+    //  Recalculamos yawDiff después de que el cuerpo haya podido girar
+    //  en este frame. La cabeza se mueve con lerp rápido (0.5) para
+    //  que la respuesta sea inmediata y fluida.
+    const headYaw = normalizeAngle(entry.targetRotY - entry.group.rotation.y);
+
+    // ── Animación de huesos ───────────────────────────────────────
+    const parts = entry.group.userData;
+    if (!parts?.head) continue;   // guardia: modelo sin userData (fallback verde)
+
+    // Head pitch (arriba/abajo) — lerp normal
+    parts.head.rotation.x +=
+      (entry.targetRotX - parts.head.rotation.x) * LERP_FACTOR;
+
+    // Head yaw (izquierda/derecha) — lerp rápido para respuesta inmediata
+    parts.head.rotation.y += (headYaw - parts.head.rotation.y) * 0.5;
+
+    // Walk swing: oscilación cruzada brazos ↔ piernas, estilo Minecraft
+    const swing = Math.sin(entry.walkPhase) * (Math.PI / 4);
+    parts.armR.rotation.x =  swing;
+    parts.armL.rotation.x = -swing;
+    parts.legR.rotation.x = -swing;
+    parts.legL.rotation.x =  swing;
   }
 }
