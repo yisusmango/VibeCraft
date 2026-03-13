@@ -48,6 +48,7 @@ const keys = { w: false, a: false, s: false, d: false };
  */
 function initKeyboard() {
   document.addEventListener('keydown', (e) => {
+    if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
     switch (e.code) {
       case 'KeyW':  keys.w = true; break;
       case 'KeyA':  keys.a = true; break;
@@ -65,6 +66,7 @@ function initKeyboard() {
   });
 
   document.addEventListener('keyup', (e) => {
+    if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
     switch (e.code) {
       case 'KeyW': keys.w = false; break;
       case 'KeyA': keys.a = false; break;
