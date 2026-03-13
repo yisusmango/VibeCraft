@@ -516,6 +516,7 @@ const environment = new Environment(scene, ambientLight, sunLight);
   };
 
   document.addEventListener('keydown', (e) => {
+    if (isMenuVisible) return;
     const phase = KEY_PHASE_MAP[e.code];
     if (!phase) return;
     e.preventDefault();                          // evita scroll u otros defaults
