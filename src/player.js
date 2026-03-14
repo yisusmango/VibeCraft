@@ -11,8 +11,10 @@
 
 import * as THREE from 'three';
 import { CONFIG, HALF_W } from './config.js';
-import { hasBlock, getBlockType } from './world.js';
+import { hasBlock, getBlockType, MATERIALS } from './world.js';
 import { playStepSound } from './audio.js';
+import { createPlayerModel } from './SkinModel.js';
+import { getSavedSkin, getCurrentBlockType } from './ui.js';
 
 // ═══════════════════════════════════════════════════════════════
 //  🧍  ESTADO DEL JUGADOR
@@ -204,6 +206,57 @@ const BOB_LERP      = 12.0;   // velocidad de interpolación al parar
 let _bobAccum  = 0;  // acumulador de fase (radianes), avanza solo al caminar
 let _bobOffset = 0;  // offset Y actual aplicado a la cámara (suavizado)
 
+// ═══════════════════════════════════════════════════════════════
+//  First-Person Arm
+// ═══════════════════════════════════════════════════════════════
+
+let _fpArm            = null;
+let _camera           = null;
+let _heldMesh         = null;
+let _currentHeldType  = null;
+
+const ARM_REST_POS = new THREE.Vector3(0.42, -0.32, -0.5);
+const ARM_REST_ROT = new THREE.Euler(-0.25, -0.3, 0.1);
+
+const PUNCH_DURATION = 0.20;
+const PUNCH_ANGLE    = Math.PI / 3;
+let _punchTimer      = 0;
+let _isPunching      = false;
+
+function _updateFPHeldItem(type) {
+  if (type === _currentHeldType) return;
+
+  if (_heldMesh) {
+    _heldMesh.removeFromParent();
+    _heldMesh.geometry.dispose();
+    _heldMesh = null;
+  }
+
+  _currentHeldType = type;
+
+  if (type && MATERIALS[type] && _fpArm) {
+    const geo  = new THREE.BoxGeometry(0.25, 0.25, 0.25);
+    const mesh = new THREE.Mesh(geo, MATERIALS[type]);
+    mesh.position.set(0, -0.55, 0.1);
+    mesh.scale.setScalar(1.2);
+    mesh.renderOrder = 999;
+    mesh.frustumCulled = false;
+    mesh.userData.sharedMaterial = true;
+    _fpArm.add(mesh);
+    _heldMesh = mesh;
+  }
+}
+
+export function triggerPunch() {
+  if (_isPunching) return;
+  _isPunching = true;
+  _punchTimer = 0;
+}
+
+export function isPunching() {
+  return _isPunching;
+}
+
 // Vectores temporales reutilizables — evita crear new Vector3 cada frame
 const _fwd   = new THREE.Vector3();
 const _right = new THREE.Vector3();
@@ -356,6 +409,39 @@ export function updatePhysics(dt, camera, controls) {
     player.position.y + CONFIG.EYE_HEIGHT + _bobOffset,
     player.position.z
   );
+
+  // 7. ── HELD ITEM + ANIMACIÓN DEL BRAZO EN PRIMERA PERSONA ───────
+  _updateFPHeldItem(getCurrentBlockType());
+
+  if (_fpArm) {
+    if (_isPunching) {
+      _punchTimer += dt;
+      const t = Math.min(_punchTimer / PUNCH_DURATION, 1);
+      const ease = Math.sin(t * Math.PI);
+      _fpArm.rotation.x = ARM_REST_ROT.x - PUNCH_ANGLE * ease;
+      _fpArm.position.z = ARM_REST_POS.z - 0.15 * ease;
+
+      if (t >= 1) {
+        _isPunching = false;
+        _punchTimer = 0;
+      }
+    } else if (isWalking) {
+      const swingX = Math.sin(_bobAccum) * 0.06;
+      const swingY = Math.cos(_bobAccum * 2) * 0.03;
+      _fpArm.position.x = ARM_REST_POS.x + swingX;
+      _fpArm.position.y = ARM_REST_POS.y + swingY;
+      _fpArm.position.z = ARM_REST_POS.z;
+      _fpArm.rotation.x = ARM_REST_ROT.x + Math.sin(_bobAccum) * 0.08;
+      _fpArm.rotation.y = ARM_REST_ROT.y;
+      _fpArm.rotation.z = ARM_REST_ROT.z;
+    } else {
+      const lf = Math.min(1, 10 * dt);
+      _fpArm.position.lerp(ARM_REST_POS, lf);
+      _fpArm.rotation.x += (ARM_REST_ROT.x - _fpArm.rotation.x) * lf;
+      _fpArm.rotation.y += (ARM_REST_ROT.y - _fpArm.rotation.y) * lf;
+      _fpArm.rotation.z += (ARM_REST_ROT.z - _fpArm.rotation.z) * lf;
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -369,8 +455,9 @@ export function updatePhysics(dt, camera, controls) {
  *
  * @param {object} controls — PointerLockControls
  */
-export function initPlayer(controls) {
+export function initPlayer(controls, camera) {
   initKeyboard();
+  _camera = camera;
 
   // Colocar la cámara sobre el jugador desde el primer frame
   controls.getObject().position.set(
@@ -378,4 +465,36 @@ export function initPlayer(controls) {
     player.position.y + CONFIG.EYE_HEIGHT,
     player.position.z
   );
+
+  // ── Brazo en primera persona ──────────────────────────────────
+  const model = createPlayerModel(getSavedSkin());
+  const armR  = model.userData.armR;
+
+  armR.removeFromParent();
+  armR.scale.set(1.6, 1.6, 1.6);
+  armR.position.copy(ARM_REST_POS);
+  armR.rotation.set(ARM_REST_ROT.x, ARM_REST_ROT.y, ARM_REST_ROT.z);
+  armR.renderOrder = 999;
+  armR.frustumCulled = false;
+  armR.traverse(child => {
+    if (child.isMesh) {
+      child.renderOrder = 999;
+      child.frustumCulled = false;
+    }
+  });
+
+  _camera.add(armR);
+  _fpArm = armR;
+
+  const armMat = armR.material;
+  model.traverse(child => {
+    if (child === armR) return;
+    if (child.isMesh) {
+      child.geometry.dispose();
+      if (child.material !== armMat) {
+        if (child.material.map) child.material.map.dispose();
+        child.material.dispose();
+      }
+    }
+  });
 }
