@@ -3,18 +3,19 @@
 //  ─────────────────────────────────────────────────────────────
 //  Responsabilidades:
 //    1. Conectarse al servidor Socket.io en localhost:3000
-//    2. Enviar el estado del jugador local (pos + rot) con throttle
+//    2. Enviar el estado del jugador local (pos + rot + heldItem) con throttle
 //    3. Mantener modelos articulados de otros jugadores (otherPlayers Map)
 //    4. Sincronizar eventos de bloque recibidos desde el servidor
 //    5. Limpiar mallas al desconectarse un jugador
 //    6. Sincronizar skin propia al conectarse y recibir skins remotas
+//    7. Renderizar el ítem en la mano (heldItem) de jugadores remotos
 //
 //  PROTOCOLO (ver server.js para el contrato completo):
-//    Emite  → 'playerUpdate'      { id, pos, rot }          (cada ~100 ms)
+//    Emite  → 'playerUpdate'      { id, pos, rot, heldItem }   (cada ~100 ms)
 //    Emite  → 'blockUpdate'       { action, x,y,z, type, normal }
 //    Emite  → 'updateProfile'          { skin, username }        (al conectarse)
 //    Recibe ← 'worldInit'              { seed, players }         (snapshot inicial, incluye skin+username)
-//    Recibe ← 'playerUpdate'           { id, pos, rot }          (otros jugadores)
+//    Recibe ← 'playerUpdate'           { id, pos, rot, heldItem }(otros jugadores)
 //    Recibe ← 'playerProfileUpdated'   { id, skin, username }    (perfil de un jugador actualizado)
 //    Recibe ← 'blockUpdate'            { action, x,y,z, type, normal }
 //    Recibe ← 'playerLeft'             { id }                    (al desconectarse alguien)
@@ -26,6 +27,13 @@
 //    Si el jugador tiene skin (Data URL Base64 PNG) se aplica la
 //    textura con UVs remapeados al atlas Minecraft 64×64.
 //    Si no tiene skin, se usa material verde de fallback.
+//
+//  HELD ITEM (ítem en mano):
+//    Un THREE.Mesh(BoxGeometry(0.25,0.25,0.25), MATERIALS[type]) se
+//    adjunta como hijo de entry.group.userData.armR. Al ser hijo del
+//    brazo derecho, hereda el walk swing automáticamente sin cálculo
+//    adicional. Los materiales de MATERIALS son singletons globales
+//    (no se disponen al limpiar el mesh; solo se dispone la geometría).
 //
 //  THROTTLE DE ENVÍO:
 //    sendUpdate() acumula el tiempo transcurrido y solo emite un
@@ -39,9 +47,9 @@
 // ═══════════════════════════════════════════════════════════════
 
 import * as THREE from 'three';
-import { addBlock, removeBlock, buildChunkMesh, setNoiseSeed } from './world.js';
+import { addBlock, removeBlock, buildChunkMesh, setNoiseSeed, MATERIALS } from './world.js';
 import { createPlayerModel } from './SkinModel.js';
-import { addChatMessage } from './ui.js';
+import { addChatMessage, getCurrentBlockType } from './ui.js';
 
 // ── Configuración ────────────────────────────────────────────────
 const SERVER_URL    = 'http://localhost:3000';
@@ -54,19 +62,22 @@ let _scene     = null;
 let _myId      = null;
 let _sendTimer = 0;
 
-// otherPlayers: Map<socketId, { group, targetPos, targetRotY, targetRotX, walkPhase, skin, username, sprite }>
-//   group      — THREE.Group devuelto por createPlayerModel()
-//   targetPos  — Vector3 objetivo para lerp de posición
-//   targetRotY — yaw de CÁMARA del jugador remoto (no el del cuerpo).
-//                El cuerpo (group.rotation.y) se desacopla de este valor:
-//                sigue la cámara al caminar, pero en reposo solo rota
-//                si el ángulo de cuello supera ±45°. La cabeza
-//                (parts.head.rotation.y) absorbe el resto del giro.
-//   targetRotX — pitch de cámara para el asentido vertical de la cabeza
-//   walkPhase  — acumulador del ciclo de caminata (radianes)
-//   skin       — Data URL Base64 PNG | null
-//   username   — string mostrado en el name tag flotante
-//   sprite     — THREE.Sprite del name tag (hijo del group)
+// otherPlayers: Map<socketId, {
+//   group,       — THREE.Group devuelto por createPlayerModel()
+//   targetPos,   — Vector3 objetivo para lerp de posición
+//   targetRotY,  — yaw de CÁMARA del jugador remoto (no el del cuerpo).
+//                  El cuerpo (group.rotation.y) se desacopla de este valor:
+//                  sigue la cámara al caminar, pero en reposo solo rota
+//                  si el ángulo de cuello supera ±45°. La cabeza
+//                  (parts.head.rotation.y) absorbe el resto del giro.
+//   targetRotX,  — pitch de cámara para el asentido vertical de la cabeza
+//   walkPhase,   — acumulador del ciclo de caminata (radianes)
+//   skin,        — Data URL Base64 PNG | null
+//   username,    — string mostrado en el name tag flotante
+//   sprite,      — THREE.Sprite del name tag (hijo del group)
+//   heldItem,    — string del tipo de bloque sostenido actualmente | null
+//   heldMesh,    — THREE.Mesh del mini-bloque en mano | null
+// }>
 const otherPlayers = new Map();
 
 // ═══════════════════════════════════════════════════════════════
@@ -87,11 +98,79 @@ function _createPlayerMesh(scene, skinSource) {
   return group;
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  🖐️  _updateHeldItem — sincronizar el mini-bloque en la mano
+//  ─────────────────────────────────────────────────────────────
+//  Si el tipo no cambió, no hace nada (evita recrear geometría
+//  cada frame innecesariamente).
+//
+//  Si cambió, destruye el mesh anterior y crea uno nuevo como
+//  hijo de armR. Al ser hijo del brazo derecho hereda el walk
+//  swing automáticamente sin cálculo adicional.
+//
+//  ⚠️  IMPORTANTE — gestión de materiales compartidos:
+//    MATERIALS[type] son singletons globales usados también por
+//    los InstancedMeshes del terreno. NO se deben disponer aquí.
+//    Marcamos el heldMesh con userData.sharedMaterial = true para
+//    que _disposeGroup lo omita al limpiar materiales.
+//    Solo se dispone la BoxGeometry, que sí es instancia propia.
+//
+//  @param {{ heldItem:string|null, heldMesh:THREE.Mesh|null,
+//            group:THREE.Group }} entry
+//  @param {string|null} newType
+// ═══════════════════════════════════════════════════════════════
+
+function _updateHeldItem(entry, newType) {
+  // No-op si el tipo no cambió — evita trabajo innecesario cada playerUpdate.
+  if (entry.heldItem === newType) return;
+
+  // ── Destruir el mesh anterior ─────────────────────────────────
+  if (entry.heldMesh) {
+    entry.heldMesh.removeFromParent();
+    // Solo disponer la geometría: el material es un singleton global de MATERIALS.
+    entry.heldMesh.geometry.dispose();
+    entry.heldMesh = null;
+  }
+
+  entry.heldItem = newType;
+
+  // ── Crear el nuevo mesh si el tipo es válido ──────────────────
+  if (newType && MATERIALS[newType]) {
+    const geo  = new THREE.BoxGeometry(0.25, 0.25, 0.25);
+    // MATERIALS[newType] puede ser un array de 6 materiales (multi-material)
+    // o un único material. THREE.Mesh acepta ambos formatos con BoxGeometry.
+    const mesh = new THREE.Mesh(geo, MATERIALS[newType]);
+
+    // Señal para que _disposeGroup no intente disponer materiales compartidos.
+    mesh.userData.sharedMaterial = true;
+
+    // Posición relativa al brazo derecho:
+    // Y = -0.70 → A la altura de la mano (el brazo mide 0.75; -0.35 era el codo)
+    // Z = -0.15 → Hacia el frente (el personaje mira hacia -Z, positivo = espalda)
+    mesh.position.set(0, -0.70, -0.15);
+    mesh.castShadow = false;
+
+    // Adjuntar como hijo del brazo derecho para heredar el walk swing
+    const armR = entry.group.userData?.armR;
+    if (armR) {
+      armR.add(mesh);
+      entry.heldMesh = mesh;
+    } else {
+      // Fallback: el modelo no tiene armR (p.ej. modelo de emergencia oculto)
+      geo.dispose();
+    }
+  }
+}
+
 // ── Helper: liberar toda la memoria de un grupo de jugador ───────
 //  Recorre el grupo y dispone geometría, textura y material de
 //  cada Mesh hijo. Los Sprite de name tag también se limpian:
 //  su material.map es un CanvasTexture que hay que liberar
 //  explícitamente para evitar fugas de memoria en GPU.
+//
+//  ⚠️  Meshes con userData.sharedMaterial = true (heldMesh):
+//    Solo se dispone su geometría. Su material pertenece al objeto
+//    global MATERIALS de world.js y NO debe destruirse aquí.
 function _disposeGroup(group) {
   group.traverse((child) => {
     if (child.isSprite) {
@@ -101,7 +180,13 @@ function _disposeGroup(group) {
       return;
     }
     if (!child.isMesh) return;
+
     child.geometry.dispose();
+
+    // Omitir la destrucción del material en meshes que comparten
+    // materiales globales (heldMesh) para no corromper el terreno.
+    if (child.userData.sharedMaterial) return;
+
     if (child.material.map) child.material.map.dispose();
     child.material.dispose();
   });
@@ -184,12 +269,16 @@ export function initMultiplayer(scene) {
           }
 
           // Guardar pose actual antes de destruir el grupo viejo
-          const pos  = entry.group.position.clone();
-          const rotY = entry.group.rotation.y;
+          const pos      = entry.group.position.clone();
+          const rotY     = entry.group.rotation.y;
+          // Capturar el tipo de ítem para re-aplicarlo en el modelo nuevo
+          const prevHeld = entry.heldItem;
 
-          // Destruir modelo antiguo y liberar recursos GPU (incluyendo CanvasTexture del name tag)
+          // Destruir modelo antiguo y liberar recursos GPU
+          // (heldMesh incluido vía traverse — geometría sí, material no)
           _scene.remove(entry.group);
           _disposeGroup(entry.group);
+          entry.heldMesh = null;   // ya destruido por _disposeGroup
 
           // Actualizar campos del perfil solo si vienen en el payload
           if (skin     !== null && skin     !== undefined) entry.skin     = skin;
@@ -204,6 +293,11 @@ export function initMultiplayer(scene) {
           entry.sprite = _createNameTagSprite(entry.username);
           entry.sprite.position.set(0, 2.2, 0);
           entry.group.add(entry.sprite);
+
+          // Restaurar el ítem en la mano sobre el nuevo modelo
+          // (forzamos heldItem a null para que _updateHeldItem no haga no-op)
+          entry.heldItem = null;
+          _updateHeldItem(entry, prevHeld);
 
           console.info(`[VibeCraft MP] Perfil actualizado y modelo reconstruido para ${id}.`);
         });
@@ -316,11 +410,14 @@ function _createNameTagSprite(username) {
 
 // ═══════════════════════════════════════════════════════════════
 //  🔄  _upsertPlayer — crear o actualizar un jugador remoto
-//  @param {{ id, pos:{x,y,z}, rot:{x,y}, skin?:string|null }} data
+//  @param {{ id, pos:{x,y,z}, rot:{x,y}, skin?:string|null,
+//            heldItem?:string|null }} data
 //
 //  La propiedad `skin` es opcional en el payload (ej. playerUpdate
 //  no la incluye por eficiencia). Solo se sobreescribe si viene
 //  explícitamente en data para no borrar una skin ya guardada.
+//  Lo mismo aplica para `heldItem`: se llama a _updateHeldItem
+//  solo si el campo viene en el payload.
 // ═══════════════════════════════════════════════════════════════
 
 function _upsertPlayer(data) {
@@ -354,9 +451,16 @@ function _upsertPlayer(data) {
       skin,
       username,
       sprite,
+      heldItem:   null,                // tipo de bloque en mano (string | null)
+      heldMesh:   null,                // THREE.Mesh del mini-bloque | null
     };
     otherPlayers.set(data.id, entry);
     console.info(`[VibeCraft MP] Nuevo jugador: ${data.id} (${username})${skin ? ' (con skin)' : ''}`);
+
+    // Aplicar el ítem en mano si viene en el snapshot inicial
+    if ('heldItem' in data) {
+      _updateHeldItem(entry, data.heldItem ?? null);
+    }
   } else {
     // Actualizar target para la interpolación en updateOtherPlayers().
     // Solo sobreescribimos skin/username si vienen en el payload — así no
@@ -366,6 +470,12 @@ function _upsertPlayer(data) {
     entry.targetRotX = data.rot?.x ?? entry.targetRotX;
     if ('skin' in data)     entry.skin     = data.skin     ?? null;
     if ('username' in data) entry.username = data.username ?? entry.username;
+
+    // Actualizar el ítem en mano solo si viene en el payload para no
+    // resetear el mesh en playerUpdates que no incluyen este campo.
+    if ('heldItem' in data) {
+      _updateHeldItem(entry, data.heldItem ?? null);
+    }
   }
 }
 
@@ -379,6 +489,7 @@ function _upsertPlayer(data) {
 //  último envío. _sendTimer se actualiza con performance.now().
 //
 //  EXTRACCIÓN DE ÁNGULOS — orden YXZ:
+//  ─────────────────────────────────────────────────────────────
 //  camera.rotation usa el orden por defecto XYZ. Al mirar hacia el sur
 //  (>90°) ese orden produce Gimbal Lock e invierte el eje X, haciendo que
 //  el pitch se lea negativo cuando debería ser positivo.
@@ -407,6 +518,7 @@ export function sendUpdate(pos, camera) {
       x: _sendEuler.x,   // pitch real, sin inversión al mirar atrás
       y: _sendEuler.y,   // yaw real,   sin Gimbal Lock
     },
+    heldItem: getCurrentBlockType(),  // tipo de bloque seleccionado en el hotbar
   });
 }
 
