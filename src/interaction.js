@@ -29,9 +29,9 @@
 import * as THREE from 'three';
 import { CONFIG, HALF_W }                                              from './config.js';
 import { addBlock, removeBlock, hasBlock, getBlockMeshes, getBlockType } from './world.js';
-import { player }                                                      from './player.js';
+import { player, triggerPunch }                                         from './player.js';
 import { getCurrentBlockType }                                         from './ui.js';
-import { sendBlockUpdate }                                             from './multiplayer.js';
+import { sendBlockUpdate, sendPunchAction }                            from './multiplayer.js';
 import { playBreakSound, playPlaceSound }                              from './audio.js';
 
 // ═══════════════════════════════════════════════════════════════
@@ -244,8 +244,8 @@ export function initInteraction(scene, controls) {
   document.addEventListener('mousedown', (e) => {
     if (!controls.isLocked) return;
     e.preventDefault();
-    if (e.button === 0) destroyBlock();
-    if (e.button === 2) placeBlock();
+    if (e.button === 0) { destroyBlock(); triggerPunch(); sendPunchAction(); }
+    if (e.button === 2) { placeBlock();   triggerPunch(); sendPunchAction(); }
   });
 
   document.addEventListener('contextmenu', (e) => e.preventDefault());
