@@ -218,6 +218,9 @@ const INSTANCED_TYPES   = ['grass', 'dirt', 'stone', 'wood', 'leaves', 'sand', '
 const _chunkMeshes = new Map();
 
 const _matrix = new THREE.Matrix4();
+const _scaleV = new THREE.Vector3();
+const _posV   = new THREE.Vector3();
+const _quatI  = new THREE.Quaternion();
 
 // Altura máxima de escaneo para buildChunkMesh.
 // La generación de terreno alcanza maxY ≤ 27; 64 da margen para
@@ -427,7 +430,17 @@ export function buildChunkMesh(cx, cz) {
 
         const im  = meshByType[data.type];
         const idx = indexByType[data.type]++;
-        _matrix.setPosition(x, y, z);
+
+        if (data.type === 'water') {
+          const h = (data.waterLevel / 8) * 0.9;
+          _scaleV.set(1, h, 1);
+          _posV.set(x, y - 0.5 + h / 2, z);
+          _matrix.compose(_posV, _quatI, _scaleV);
+        } else {
+          _matrix.identity();
+          _matrix.setPosition(x, y, z);
+        }
+
         im.setMatrixAt(idx, _matrix);
         im.userData.instances[idx] = { x, y, z, type: data.type };
       }
@@ -467,9 +480,13 @@ export function getBlockMeshes() {
 //  (generación de terreno, deserialización).
 // ═══════════════════════════════════════════════════════════════
 
-export function addBlock(x, y, z, type = 'grass', normal = null, { rebuild = true, waterLevel = 8 } = {}) {
+export function addBlock(x, y, z, type = 'grass', normal = null, { rebuild = true, waterLevel = 8, isSource = true } = {}) {
   const key = blockKey(x, y, z);
-  if (blockMap.has(key)) return;
+  const existing = blockMap.get(key);
+  if (existing && existing.type !== 'water') return;
+  if (existing && existing.type === 'water' && type !== 'water') {
+    blockMap.delete(key);
+  }
 
   if (type === 'torch') {
     if (normal && normal.y === -1) return;
@@ -533,6 +550,7 @@ export function addBlock(x, y, z, type = 'grass', normal = null, { rebuild = tru
     normal : null,
     isSolid: !TRANSPARENT_TYPES.has(type),
     waterLevel: type === 'water' ? waterLevel : 0,
+    isSource:   type === 'water' ? isSource   : undefined,
   });
 
   if (rebuild) {
@@ -846,6 +864,7 @@ export function deserializeWorld(blocksArray) {
 export function updateFluids() {
   const CS = CONFIG.CHUNK_SIZE;
   const dirtyChunks = new Set();
+  const pendingRemovals = [];
 
   const waterBlocks = [];
   for (const data of blockMap.values()) {
@@ -855,6 +874,29 @@ export function updateFluids() {
   for (const data of waterBlocks) {
     const { x, y, z, waterLevel } = data;
 
+    // ── Retracción: bloques no-fuente sin soporte se secan ──────
+    if (!data.isSource) {
+      const above = blockMap.get(blockKey(x, y + 1, z));
+      let supported = above && above.type === 'water';
+
+      if (!supported && waterLevel < 8) {
+        const horizDirs = [[1,0],[-1,0],[0,1],[0,-1]];
+        for (const [dx, dz] of horizDirs) {
+          const n = blockMap.get(blockKey(x + dx, y, z + dz));
+          if (n && n.type === 'water' && n.waterLevel > waterLevel) {
+            supported = true;
+            break;
+          }
+        }
+      }
+
+      if (!supported) {
+        pendingRemovals.push({ x, y, z });
+        continue;
+      }
+    }
+
+    // ── Expansión: propagación normal ───────────────────────────
     const belowKey = blockKey(x, y - 1, z);
     const below = blockMap.get(belowKey);
 
@@ -864,8 +906,8 @@ export function updateFluids() {
         dirtyChunks.add(chunkKey(Math.floor(x / CS), Math.floor(z / CS)));
       }
       if (!blockMap.has(belowKey)) {
-        addBlock(x, y - 1, z, 'water', null, { rebuild: false, waterLevel: 8 });
-        dirtyChunks.add(chunkKey(Math.floor(x / CS), Math.floor((z) / CS)));
+        addBlock(x, y - 1, z, 'water', null, { rebuild: false, waterLevel: 8, isSource: false });
+        dirtyChunks.add(chunkKey(Math.floor(x / CS), Math.floor(z / CS)));
       }
     } else if (below && below.isSolid) {
       if (waterLevel > 1) {
@@ -877,16 +919,22 @@ export function updateFluids() {
           const neighbor = blockMap.get(neighborKey);
 
           if (!neighbor) {
-            addBlock(nx, y, nz, 'water', null, { rebuild: false, waterLevel: waterLevel - 1 });
+            addBlock(nx, y, nz, 'water', null, { rebuild: false, waterLevel: waterLevel - 1, isSource: false });
             dirtyChunks.add(chunkKey(Math.floor(nx / CS), Math.floor(nz / CS)));
           } else if (!neighbor.isSolid && neighbor.type !== 'water') {
             removeBlock(nx, y, nz, { rebuild: false });
-            addBlock(nx, y, nz, 'water', null, { rebuild: false, waterLevel: waterLevel - 1 });
+            addBlock(nx, y, nz, 'water', null, { rebuild: false, waterLevel: waterLevel - 1, isSource: false });
             dirtyChunks.add(chunkKey(Math.floor(nx / CS), Math.floor(nz / CS)));
           }
         }
       }
     }
+  }
+
+  // ── Aplicar eliminaciones de corrientes sin soporte ───────────
+  for (const { x, y, z } of pendingRemovals) {
+    removeBlock(x, y, z, { rebuild: false });
+    dirtyChunks.add(chunkKey(Math.floor(x / CS), Math.floor(z / CS)));
   }
 
   for (const key of dirtyChunks) {
