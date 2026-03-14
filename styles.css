@@ -271,6 +271,10 @@ body.menu-active #dev-tools,
 body.menu-active #state,
 body.menu-active #hotbar { display: none !important; }
 
+/* Inventory overlay y cursor-item: nunca visibles en el menú principal */
+body.menu-active #inventory-overlay { display: none !important; }
+body.menu-active #cursor-item       { display: none !important; }
+
 /* Overlay de PAUSA: oculto por defecto.
    Se muestra vía JS (ui.js → controls 'unlock' event).
    CAMBIO: quitamos display:flex del selector original
@@ -621,3 +625,284 @@ body.menu-active #hotbar { display: none !important; }
    ══════════════════════════════════════════════════════════════════ */
 body.wm-active .mc-splash  { display: none !important; }
 body.wm-active .mc-version { display: none !important; }
+
+
+/* ══════════════════════════════════════════════════════════════════
+   🎒  INVENTORY OVERLAY — Sistema de inventario Creative Mode
+   ══════════════════════════════════════════════════════════════════
+   Jerarquía de z-index en VibeCraft:
+     200 — HUD elementos (crosshair, hud, block-info, state)
+     300 — #overlay (menú de pausa)
+     400 — #dev-tools
+     500 — #main-menu
+     600 — #inventory-overlay  ← este panel
+    1000 — #cursor-item        ← siempre encima de todo
+
+   Nota: El panel tiene z-index superior al menú principal (500) pero
+   el guard body.menu-active { display: none !important } evita que
+   aparezca fuera del contexto de juego.
+   ══════════════════════════════════════════════════════════════════ */
+
+/* ── Overlay: fondo oscuro semitransparente ──────────────────────── */
+#inventory-overlay {
+  display: none;            /* oculto por defecto; JS lo pone en 'flex' */
+  position: fixed;
+  inset: 0;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.62);
+  z-index: 600;
+  pointer-events: auto;
+  cursor: default;
+}
+
+/* ── Panel central — estética MC: gris #c6c6c6 + bevel clásico ──── */
+/*
+   Anatomía del bevel (panel elevado):
+     top / left  → #ffffff (luz, aristas superiores)
+     right / bottom → #555555 (sombra, aristas inferiores)
+   Contorno exterior de 2px negro para el borde duro característico de MC.
+*/
+#inventory-panel {
+  background: #c6c6c6;
+
+  /* Bevel elevado: luz top/left, sombra bottom/right */
+  border-style: solid;
+  border-width: 2px;
+  border-top-color:    #ffffff;
+  border-left-color:   #ffffff;
+  border-right-color:  #555555;
+  border-bottom-color: #555555;
+
+  /* Contorno exterior negro de 2px */
+  outline: 2px solid #000000;
+
+  padding: 14px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+
+  /* Limitar altura para pantallas pequeñas */
+  max-height: 90vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+
+  image-rendering: pixelated;
+  user-select: none;
+
+  /* Scrollbar estilo retro */
+  scrollbar-width: thin;
+  scrollbar-color: #888888 #aaaaaa;
+}
+
+#inventory-panel::-webkit-scrollbar       { width: 8px; }
+#inventory-panel::-webkit-scrollbar-track { background: #aaaaaa; border: 1px solid #999; }
+#inventory-panel::-webkit-scrollbar-thumb { background: #888888; border: 1px solid #555; }
+
+/* ── Título del panel ───────────────────────────────────────────── */
+.inv-panel-title {
+  font-family: 'Courier New', monospace;
+  font-size: 13px;
+  font-weight: bold;
+  color: #3c3c3c;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+  text-shadow: 1px 1px 0 rgba(255,255,255,0.50);
+}
+
+/* ── Etiqueta de sección ────────────────────────────────────────── */
+.inv-section-label {
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  font-weight: bold;
+  color: #3c3c3c;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  text-shadow: 1px 1px 0 rgba(255,255,255,0.45);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   📦  SLOTS DE INVENTARIO — .inv-slot
+   ──────────────────────────────────────────────────────────────────
+   Anatomía del slot (hundido):
+     top / left  → #373737 (sombra, da efecto de profundidad)
+     right / bottom → #d4d4d4 (luz, completa el bevel invertido)
+   Este bevel INVERSO al del panel hace que los slots parezcan
+   hoyos dentro de la superficie de piedra — comportamiento idéntico
+   al inventario original de Minecraft.
+   ══════════════════════════════════════════════════════════════════ */
+
+/* ── Slot genérico ──────────────────────────────────────────────── */
+.inv-slot {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  position: relative;
+  image-rendering: pixelated;
+  box-sizing: border-box;
+
+  /* Fondo oscuro del hueco */
+  background: #8b8b8b;
+
+  /* Bevel hundido */
+  border-style: solid;
+  border-width: 2px;
+  border-top-color:    #373737;
+  border-left-color:   #373737;
+  border-right-color:  #d4d4d4;
+  border-bottom-color: #d4d4d4;
+
+  transition: background 80ms;
+}
+
+.inv-slot:hover {
+  background: #9e9e9e;
+}
+
+.inv-slot:active {
+  background: #7a7a7a;
+}
+
+/* Canvas del icono dentro del slot */
+.inv-slot canvas {
+  width: 36px;
+  height: 36px;
+  display: block;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  pointer-events: none;    /* los clics pasan al slot contenedor */
+}
+
+/* ── Variante: slot del Catálogo Creativo ───────────────────────── */
+/*
+   El cursor "crosshair" indica visualmente que el slot es una fuente
+   infinita (drag sin consumo). El hover azulado es el lenguaje visual
+   de "selección creativa" (igual que en el inventario creativo de MC).
+*/
+.inv-slot--catalog {
+  cursor: crosshair;
+}
+
+.inv-slot--catalog:hover {
+  background: #9898b8;   /* tinte azul-gris al hovear el catálogo */
+}
+
+.inv-slot--catalog:active {
+  background: #7878a0;
+}
+
+/* ── Grid del Catálogo Creativo ────────────────────────────────── */
+/*
+   9 columnas fijas de 44px + gap de 2px.
+   max-height limita a ~2 filas + scroll para catálogos grandes.
+   El fondo y bevel propios dan el look de "caja hundida" en el panel.
+*/
+#creative-catalog {
+  display: grid;
+  grid-template-columns: repeat(9, 44px);
+  gap: 2px;
+
+  /* Altura visible: ~3 filas (3 * 44 + 2 * 2 = 136) + scroll */
+  max-height: 140px;
+  overflow-y: auto;
+  overflow-x: hidden;
+
+  padding: 2px;
+
+  /* Caja hundida (bevel invertido al panel) */
+  background: #7a7a7a;
+  border-style: solid;
+  border-width: 2px;
+  border-top-color:    #373737;
+  border-left-color:   #373737;
+  border-right-color:  #d4d4d4;
+  border-bottom-color: #d4d4d4;
+
+  scrollbar-width: thin;
+  scrollbar-color: #666666 #888888;
+}
+
+#creative-catalog::-webkit-scrollbar       { width: 6px; }
+#creative-catalog::-webkit-scrollbar-track { background: #888888; }
+#creative-catalog::-webkit-scrollbar-thumb { background: #666666; border: 1px solid #444; }
+
+/* ── Grid de Inventario principal (slots 9-35, 9x3) ─────────────── */
+#inv-main-grid {
+  display: grid;
+  grid-template-columns: repeat(9, 44px);
+  gap: 2px;
+}
+
+/* ── Separador entre inventario y hotbar ────────────────────────── */
+/*
+   La separación visual emula el borde de sección del inventario MC:
+   una ranura oscura arriba y un brillo tenue abajo,
+   haciendo que la tira del hotbar parezca un compartimento aparte.
+*/
+.inv-sep {
+  height: 6px;
+  background: #b8b8b8;
+  border-top:    2px solid #8b8b8b;
+  border-bottom: 2px solid #d4d4d4;
+  margin: 1px 0;
+}
+
+/* ── Strip del Hotbar en el panel (slots 0-8, 9x1) ──────────────── */
+/*
+   Este grid es la representación visual del hotbar del HUD dentro del
+   inventario. Los cambios aquí se propagan al hotbar del juego vía
+   handleInventorySlotClick() → buildHotbar() en ui.js.
+*/
+#inv-hotbar-grid {
+  display: grid;
+  grid-template-columns: repeat(9, 44px);
+  gap: 2px;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   🖱️  CURSOR ITEM — Bloque "pegado" al ratón durante el drag
+   ══════════════════════════════════════════════════════════════════
+   Técnica:
+     • position: fixed  → coordenadas absolutas de viewport
+     • pointer-events: none → los clics atraviesan hacia los slots
+     • z-index: 1000    → por encima de absolutamente todo
+     • JS posiciona con: left = e.clientX - 20; top = e.clientY - 20
+       (offset de 20px centra el icono de 40px en el cursor)
+
+   El drop-shadow en el canvas da profundidad y distingue el ítem
+   flotante del fondo del panel de inventario.
+   ══════════════════════════════════════════════════════════════════ */
+#cursor-item {
+  display: none;           /* oculto por defecto; JS lo pone en 'block' */
+  position: fixed;
+  width: 40px;
+  height: 40px;
+  pointer-events: none;
+  z-index: 1000;
+  image-rendering: pixelated;
+}
+
+#cursor-item canvas {
+  width: 40px;
+  height: 40px;
+  display: block;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  /* Sombra para destacar el ítem sobre cualquier fondo */
+  filter: drop-shadow(2px 2px 2px rgba(0, 0, 0, 0.90));
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   🎮  ESTADOS DE BODY CON INVENTARIO ABIERTO — body.inventory-active
+   ══════════════════════════════════════════════════════════════════
+   Cuando el inventario está abierto:
+     • El crosshair se oculta (no tiene sentido durante el drag)
+     • El hotbar del HUD se atenúa (está representado en el panel)
+     • El chat se oculta (interferiría con la interacción del inventario)
+   ══════════════════════════════════════════════════════════════════ */
+body.inventory-active #crosshair      { display: none; }
+body.inventory-active #hotbar         { opacity: 0.4; pointer-events: none; }
+body.inventory-active #chat-container { opacity: 0; pointer-events: none; }

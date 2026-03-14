@@ -99,6 +99,47 @@
     <input type="text" id="chat-input" placeholder="Escribe un mensaje..." maxlength="64" style="display: none; padding: 5px; font-family: 'Courier New', monospace; background: rgba(0,0,0,0.6); color: white; border: 1px solid #555; outline: none; pointer-events: auto;" />
   </div>
 
+  <!-- ═══════════════════════════════════════════════════════════════
+       🎒  INVENTORY OVERLAY — Creative Mode Inventory
+       Estructura:
+         • #inventory-overlay  → fondo oscuro semitransparente (z: 600)
+         • #inventory-panel    → panel central estilo MC (gris #c6c6c6)
+           ├─ .inv-panel-title   → título "Inventario Creativo"
+           ├─ .inv-section-label → "Catálogo de Bloques"
+           ├─ #creative-catalog  → grid scrollable, read-only, todos los MATERIALS
+           ├─ .inv-section-label → "Inventario"
+           ├─ #inv-main-grid     → 9×3 = slots 9..35 (inventario interno)
+           ├─ .inv-sep           → separador visual entre inventario y hotbar
+           └─ #inv-hotbar-grid   → 9×1 = slots 0..8 (refleja el hotbar del HUD)
+       Todos los slots .inv-slot se generan y gestionan desde ui.js.
+       ═══════════════════════════════════════════════════════════════ -->
+  <div id="inventory-overlay">
+    <div id="inventory-panel">
+
+      <div class="inv-panel-title">Inventario Creativo</div>
+
+      <div class="inv-section-label">Catálogo de Bloques</div>
+      <div id="creative-catalog"></div>
+
+      <div class="inv-section-label">Inventario</div>
+      <div id="inv-main-grid"></div>
+
+      <div class="inv-sep"></div>
+
+      <div id="inv-hotbar-grid"></div>
+
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       🖱️  CURSOR ITEM — El bloque "pegado" al ratón durante el drag.
+       • position: fixed  → se posiciona en coordenadas de viewport
+       • pointer-events: none → los clics pasan a través hacia los slots
+       • z-index: 1000    → siempre encima de todo, incluyendo el panel
+       Su contenido (un <canvas>) se inyecta y actualiza desde ui.js.
+       ═══════════════════════════════════════════════════════════════ -->
+  <div id="cursor-item"></div>
+
   <script type="module" src="./src/main.js"></script>
 
 </body>
