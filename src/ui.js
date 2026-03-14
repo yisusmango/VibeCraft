@@ -9,6 +9,8 @@ import { MATERIALS }       from './world.js';
 //    • Hotbar: 9 slots dinámicos renderizados desde inventoryState
 //    • Sistema de Inventario Creative Mode (tecla E)
 //      – Catálogo: todos los bloques de MATERIALS (read-only, infinito)
+//        ↳ Clic con cursor vacío  → clonar bloque al cursor
+//        ↳ Clic con cursor lleno  → DESTRUIR ítem del cursor (Trash)
 //      – Inventario: 27 slots internos (índices 9-35)
 //      – Hotbar strip: 9 slots sincronizados con el HUD (índices 0-8)
 //      – Cursor item: bloque "pegado" al ratón (click-to-drag)
@@ -29,12 +31,12 @@ const elSG      = document.getElementById('sg');
 const overlayEl = document.getElementById('overlay');
 
 // ── Estado: chat e inventario ─────────────────────────────────────
-//  isChatting    → true mientras el input de chat está activo.
-//                  Previene que controls.unlock() abra el menú de pausa.
+//  isChatting     → true mientras el input de chat está activo.
+//                   Previene que controls.unlock() abra el menú de pausa.
 //  isInventoryOpen → true mientras el overlay de inventario está visible.
 //                    Se pone a true ANTES de llamar controls.unlock() para
 //                    que el listener 'unlock' no muestre el menú de pausa.
-let isChatting     = false;
+let isChatting      = false;
 let isInventoryOpen = false;
 
 // ═══════════════════════════════════════════════════════════════
@@ -51,9 +53,9 @@ let isInventoryOpen = false;
 //    – type  → clave de MATERIALS (e.g. 'grass', 'stone', etc.)
 // ═══════════════════════════════════════════════════════════════
 
-let inventoryState   = new Array(36).fill(null);
-let cursorItem       = null;     // bloque actualmente "pegado" al cursor
-let selectedSlotIndex = 0;       // índice del slot activo en el hotbar (0-8)
+let inventoryState    = new Array(36).fill(null);
+let cursorItem        = null;   // bloque actualmente "pegado" al cursor
+let selectedSlotIndex = 0;     // índice del slot activo en el hotbar (0-8)
 
 // ── Bloques por defecto del Hotbar ───────────────────────────────
 //  HOTBAR_BLOCKS se mantiene como export para compatibilidad con
@@ -237,9 +239,13 @@ function setSlot(index) {
 //  ─────────────────────────────────────────────────────────────
 //  Flujo de interacción (click-to-drag, sin HTML5 Drag & Drop):
 //
-//  1. Click en slot del Catálogo:
-//     cursorItem = { type: blockType }  (copia infinita)
-//     updateCursorItem() → muestra el canvas flotante bajo el cursor
+//  1. Click en el CATÁLOGO (listener único delegado en #creative-catalog):
+//     a) cursorItem !== null → TRASH: destruir el ítem del cursor.
+//        Aplica a CUALQUIER clic dentro del área del catálogo —
+//        ya sea sobre un slot con bloque o en un gap vacío del grid.
+//     b) cursorItem === null → CLONE: buscar el .inv-slot--catalog más
+//        cercano con e.target.closest(), leer su dataset.block y clonar.
+//        Si el clic cayó en un gap (sin slot padre), es un no-op silencioso.
 //
 //  2. Click en slot del Inventario / Hotbar strip:
 //     a) cursorItem != null + slot vacío    → depositar (swap ∅ ↔ item)
@@ -248,9 +254,24 @@ function setSlot(index) {
 //     d) cursorItem == null + slot vacío    → no-op
 //
 //  3. Click en el overlay oscuro (fuera del panel):
-//     cursorItem = null  (tirar el ítem al "suelo")
-//     closeInventory()
+//     cursorItem = null  (tirar el ítem al "suelo") + closeInventory()
 //
+//  ─────────────────────────────────────────────────────────────
+//  ⚠️  POR QUÉ UN ÚNICO LISTENER DELEGADO EN EL CATÁLOGO:
+//  ─────────────────────────────────────────────────────────────
+//  Si hubiese un listener por cada .inv-slot--catalog Y uno más
+//  en el contenedor #creative-catalog, el evento de clic bubblería
+//  slot → contenedor dentro de la misma pulsación:
+//
+//    1. Slot listener: cursorItem era null → lo pone a { type: 'grass' }
+//    2. Container listener: cursorItem ya != null → lo borra inmediatamente
+//
+//  Resultado: el ítem nunca llega al cursor. Race condition garantizada.
+//
+//  La delegación en el contenedor elimina ese problema: hay un único
+//  punto de decisión, sin interferencias de bubbling.
+//
+//  ─────────────────────────────────────────────────────────────
 //  Optimización DOM: renderInventorySlot(index) hace actualización
 //  quirúrgica de UN slot; no reconstruye el grid completo.
 //  buildHotbar() solo se llama cuando un slot 0-8 cambia.
@@ -273,8 +294,8 @@ function createSlotCanvas(blockType) {
 
 /**
  * Sincroniza el div #cursor-item con el estado de cursorItem.
- * Si cursorItem es null, oculta el div y limpia el canvas.
- * Si cursorItem tiene contenido, muestra el canvas correspondiente.
+ * Si cursorItem es null, oculta el div y limpia su contenido.
+ * Si cursorItem tiene datos, renderiza el canvas del bloque correspondiente.
  */
 function updateCursorItem() {
   const el = document.getElementById('cursor-item');
@@ -309,10 +330,9 @@ function renderInventorySlot(index) {
 }
 
 /**
- * Handler de click compartido por todos los .inv-slot del panel.
+ * Handler de click compartido por todos los .inv-slot del panel
+ * de inventario y del hotbar strip (NO del catálogo, que usa delegación).
  * Implementa la lógica de pick-up / deposit / swap.
- * Después de modificar inventoryState, actualiza el DOM de forma
- * quirúrgica y sincroniza el hotbar del HUD si el slot es 0-8.
  * @param {MouseEvent} e
  */
 function handleInventorySlotClick(e) {
@@ -320,8 +340,8 @@ function handleInventorySlotClick(e) {
   const slotItem = inventoryState[index];   // item actual en este slot
 
   if (cursorItem !== null) {
-    // Tenemos un ítem en el cursor → depositar o intercambiar
-    // Nota: si slotItem es null, la "swap" produce null en cursorItem (correcto)
+    // Tenemos un ítem en el cursor → depositar o intercambiar.
+    // Si slotItem es null, la "swap" produce null en cursorItem (correcto).
     inventoryState[index] = { type: cursorItem.type };
     cursorItem = slotItem ? { type: slotItem.type } : null;
   } else if (slotItem !== null) {
@@ -329,7 +349,7 @@ function handleInventorySlotClick(e) {
     cursorItem = { type: slotItem.type };
     inventoryState[index] = null;
   }
-  // Cursor vacío + slot vacío → no-op (no hacer nada)
+  // Cursor vacío + slot vacío → no-op
 
   updateCursorItem();
   renderInventorySlot(index);
@@ -339,9 +359,9 @@ function handleInventorySlotClick(e) {
 }
 
 /**
- * Crea un elemento .inv-slot para el panel de inventario.
+ * Crea un elemento .inv-slot para el panel de inventario o el hotbar strip.
  * Incluye el canvas del bloque (si existe en inventoryState)
- * y registra el click handler.
+ * y registra el click handler de pick-up/deposit/swap.
  * @param {number} index — índice en inventoryState (0-35)
  * @returns {HTMLDivElement}
  */
@@ -359,8 +379,13 @@ function createInventorySlot(index) {
 
 /**
  * Crea un elemento .inv-slot--catalog para el Catálogo Creativo.
- * Es un slot de "fuente infinita": el click siempre produce una copia
- * del bloque en cursorItem sin modificar inventoryState.
+ *
+ * IMPORTANTE: Este slot NO registra ningún listener de click propio.
+ * Toda la lógica de interacción (trash / clone) vive en un único
+ * listener delegado registrado en el contenedor #creative-catalog
+ * dentro de buildInventoryPanel(). Esto evita la race condition de
+ * bubbling que surgiría si coexistieran listeners en slot y contenedor.
+ *
  * @param {string} blockType — clave de MATERIALS
  * @returns {HTMLDivElement}
  */
@@ -369,34 +394,69 @@ function createCatalogSlot(blockType) {
   slot.className     = 'inv-slot inv-slot--catalog';
   slot.dataset.block = blockType;
   slot.title         = blockType;   // tooltip nativo con el nombre del bloque
-
   slot.appendChild(createSlotCanvas(blockType));
-
-  slot.addEventListener('click', () => {
-    cursorItem = { type: blockType };
-    updateCursorItem();
-  });
-
+  // ⚠️ Sin addEventListener aquí — el listener delegado vive en el contenedor.
   return slot;
 }
 
 /**
- * Construye el panel de inventario en el DOM.
+ * Construye el panel de inventario completo en el DOM.
  * Se llama UNA sola vez en initUI() para evitar acumulación de
  * event listeners en opens/closes subsiguientes.
  *
  * Secciones construidas:
  *   • #creative-catalog — un slot por cada clave en MATERIALS
+ *                         + 1 listener delegado (trash / clone)
  *   • #inv-main-grid    — slots 9-35 (inventario interno, 9×3)
  *   • #inv-hotbar-grid  — slots 0-8  (hotbar strip, 9×1)
  */
 function buildInventoryPanel() {
+
   // ── Catálogo Creativo ────────────────────────────────────────────
   const catalogEl = document.getElementById('creative-catalog');
   if (catalogEl) {
     catalogEl.innerHTML = '';
     Object.keys(MATERIALS).forEach(blockType => {
       catalogEl.appendChild(createCatalogSlot(blockType));
+    });
+
+    // ── Listener delegado único para TODA el área del catálogo ─────
+    //
+    //  Casos cubiertos por este único handler:
+    //
+    //  CASO A — cursorItem !== null (tengo un ítem en el cursor):
+    //    → TRASH. Se aplica sea cual sea el e.target dentro del catálogo:
+    //      • Clic sobre el canvas de un bloque (e.target = <canvas>)
+    //      • Clic sobre el div de un slot     (e.target = .inv-slot--catalog)
+    //      • Clic en un gap vacío del grid    (e.target = #creative-catalog)
+    //    En todos los casos: cursorItem = null + updateCursorItem().
+    //
+    //  CASO B — cursorItem === null (cursor vacío):
+    //    → CLONE si el clic fue sobre un slot de bloque.
+    //      e.target.closest('.inv-slot--catalog') sube desde el canvas
+    //      (o desde el propio slot) hasta encontrar el div del slot,
+    //      lee su dataset.block y clona el bloque al cursor.
+    //    → NO-OP si el clic fue en un gap (closest retorna null).
+    catalogEl.addEventListener('click', (e) => {
+
+      if (cursorItem !== null) {
+        // ── TRASH ──────────────────────────────────────────────────
+        // El jugador sostiene un ítem y hace clic en cualquier parte
+        // del catálogo → destruir el ítem (comportamiento Minecraft Creative).
+        cursorItem = null;
+        updateCursorItem();
+        return;
+      }
+
+      // ── CLONE ──────────────────────────────────────────────────
+      // Cursor vacío → intentar recoger el bloque clickeado.
+      // closest() sube por el DOM desde e.target hasta encontrar un
+      // .inv-slot--catalog; retorna null si el clic cayó en un gap vacío.
+      const slotEl = e.target.closest('.inv-slot--catalog');
+      if (!slotEl) return;   // gap vacío + cursor vacío → no-op
+
+      cursorItem = { type: slotEl.dataset.block };
+      updateCursorItem();
     });
   }
 
@@ -427,13 +487,13 @@ function buildInventoryPanel() {
  *   if (!isChatting && !isInventoryOpen) overlayEl.style.display = 'flex'
  * Si invirtiéramos el orden, unlock() dispararía el menú de pausa.
  *
- * @param {PointerLockControls} controls
+ * @param {import('three/addons/controls/PointerLockControls.js').PointerLockControls} controls
  */
 function openInventory(controls) {
-  isInventoryOpen = true;                                          // ← primero
+  isInventoryOpen = true;                                            // ← primero
   document.getElementById('inventory-overlay').style.display = 'flex';
   document.body.classList.add('inventory-active');
-  controls.unlock();                                               // ← después
+  controls.unlock();                                                 // ← después
 }
 
 /**
@@ -444,7 +504,7 @@ function openInventory(controls) {
  * usuario antes de que requestPointerLock() se llame de nuevo.
  * 10 ms es suficiente (mismo valor que usa el subsistema de chat).
  *
- * @param {PointerLockControls} controls
+ * @param {import('three/addons/controls/PointerLockControls.js').PointerLockControls} controls
  */
 function closeInventory(controls) {
   cursorItem = null;
@@ -629,12 +689,11 @@ export function initUI(controls) {
   }, { passive: true });
 
   // ── 5. Click en el fondo del overlay: tirar ítem + cerrar ──────
-  //  e.target === overlay (no el panel interior) → clic fuera del panel
+  //  e.target === invOverlay (no el panel interior) → clic fuera del panel.
+  //  closeInventory() ya limpia cursorItem internamente.
   const invOverlay = document.getElementById('inventory-overlay');
   invOverlay.addEventListener('click', (e) => {
     if (e.target === invOverlay) {
-      cursorItem = null;
-      updateCursorItem();
       closeInventory(controls);
     }
   });
@@ -655,12 +714,10 @@ export function initUI(controls) {
     // ── Tecla E: toggle inventario ─────────────────────────────
     if (e.code === 'KeyE' && !isChatting) {
       if (isInventoryOpen) {
-        // Cerrar inventario (también funciona con E cuando está abierto)
         closeInventory(controls);
         return;
       }
       if (controls.isLocked) {
-        // Abrir inventario (solo si el jugador está en control del juego)
         e.preventDefault();
         openInventory(controls);
         return;
@@ -705,7 +762,7 @@ export function initUI(controls) {
   //  Bloqueado mientras el inventario está abierto para no cambiar
   //  el slot activo accidentalmente al hacer scroll en el catálogo.
   document.addEventListener('wheel', (e) => {
-    if (isInventoryOpen) return;   // ← bloqueo durante inventario
+    if (isInventoryOpen) return;
     e.preventDefault();
     const dir  = e.deltaY > 0 ? 1 : -1;
     const next = ((selectedSlotIndex + dir) % 9 + 9) % 9;
@@ -720,7 +777,7 @@ export function initUI(controls) {
   //  closeChat() usa un delay de 10 ms para que el evento Escape
   //  no burbujee y abra el menú de pausa.
   function closeChat(inputEl) {
-    inputEl.value      = '';
+    inputEl.value         = '';
     inputEl.style.display = 'none';
     isChatting = false;
     setTimeout(() => controls.lock(), 10);
@@ -749,8 +806,8 @@ export function initUI(controls) {
 /**
  * Actualiza las lecturas del HUD: posición, bloques y bloque apuntado.
  * Se llama en el bucle principal de requestAnimationFrame.
- * @param {object} player      — objeto del jugador (position, velocity, isOnGround)
- * @param {Map}    blockMap    — mapa de bloques del mundo
+ * @param {object}      player      — objeto del jugador (position, velocity, isOnGround)
+ * @param {Map}         blockMap    — mapa de bloques del mundo
  * @param {object|null} targetBlock — bloque bajo el cursor de interacción
  */
 export function updateHUD(player, blockMap, targetBlock) {
