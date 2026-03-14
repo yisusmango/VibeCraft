@@ -193,6 +193,12 @@ io.on('connection', (socket) => {
     socket.broadcast.emit('blockUpdate', data);
   });
 
+  // ── playerAction (punch, etc.) ──────────────────────────────────
+  socket.on('playerAction', (data) => {
+    if (typeof data?.action !== 'string') return;
+    socket.broadcast.emit('playerAction', { id: socket.id, ...data });
+  });
+
   // ── Chat Multijugador ─────────────────────────────────────────
   //  El username se extrae de playerState (fuente de verdad del servidor)
   //  para evitar spoofing: el cliente solo envía el texto del mensaje.
