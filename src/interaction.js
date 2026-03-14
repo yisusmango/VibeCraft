@@ -27,11 +27,12 @@
 // ═══════════════════════════════════════════════════════════════
 
 import * as THREE from 'three';
-import { CONFIG, HALF_W }                                  from './config.js';
-import { addBlock, removeBlock, hasBlock, getBlockMeshes } from './world.js';
-import { player }                                          from './player.js';
-import { getCurrentBlockType }                             from './ui.js';
-import { sendBlockUpdate }                                 from './multiplayer.js';
+import { CONFIG, HALF_W }                                              from './config.js';
+import { addBlock, removeBlock, hasBlock, getBlockMeshes, getBlockType } from './world.js';
+import { player }                                                      from './player.js';
+import { getCurrentBlockType }                                         from './ui.js';
+import { sendBlockUpdate }                                             from './multiplayer.js';
+import { playBreakSound, playPlaceSound }                              from './audio.js';
 
 // ═══════════════════════════════════════════════════════════════
 //  🎯  RAYCASTER
@@ -170,12 +171,27 @@ function wouldOverlapPlayer(bx, by, bz, blockType = 'grass') {
   );
 }
 
-/** Destruye el bloque apuntado (clic izquierdo). */
+/**
+ * Destruye el bloque apuntado (clic izquierdo).
+ *
+ * AUDIO:
+ *   1. Leemos el tipo ANTES de remover (removeBlock borra la entrada del blockMap).
+ *   2. Reproducimos el sonido de rotura DESPUÉS de remover para que el
+ *      feedback auditivo coincida con el visual (bloque desaparecido).
+ */
 function destroyBlock() {
   if (!targetBlock) return;
   const { x, y, z } = targetBlock;
+
+  // Capturar el tipo antes de que removeBlock lo elimine del blockMap
+  const blockType = getBlockType(x, y, z);
+
   removeBlock(x, y, z);
   sendBlockUpdate('remove', x, y, z, null, null);  // notificar a otros
+
+  // Reproducir sonido de rotura según el tipo de bloque eliminado
+  playBreakSound(blockType);
+
   targetBlock = null;
   highlightMesh.visible = false;
 }
@@ -184,6 +200,10 @@ function destroyBlock() {
  * Coloca un bloque en la cara adyacente del bloque apuntado (clic derecho).
  * Pasa targetFaceNormal a addBlock para que world.js pueda orientar
  * correctamente las antorchas en pared.
+ *
+ * AUDIO:
+ *   Reproducimos el sonido de colocación con el tipo seleccionado en el
+ *   inventario, que es el mismo tipo que addBlock va a crear.
  */
 function placeBlock() {
   if (!targetBlock || !targetFaceNormal) return;
@@ -199,6 +219,9 @@ function placeBlock() {
 
   addBlock(nx, ny, nz, selectedType, targetFaceNormal);
   sendBlockUpdate('add', nx, ny, nz, selectedType, targetFaceNormal);  // notificar a otros
+
+  // Reproducir sonido de colocación con el tipo del bloque recién puesto
+  playPlaceSound(selectedType);
 }
 
 // ═══════════════════════════════════════════════════════════════

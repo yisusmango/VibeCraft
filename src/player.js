@@ -6,11 +6,13 @@
 //    • Detección de colisiones AABB contra el mundo
 //    • Bucle de física: gravedad, movimiento y resolución por eje
 //    • Sincronización cámara → posición del jugador
+//    • Sistema de sonido de pasos (stepAccumulator)
 // ═══════════════════════════════════════════════════════════════
 
 import * as THREE from 'three';
 import { CONFIG, HALF_W } from './config.js';
 import { hasBlock, getBlockType } from './world.js';
+import { playStepSound } from './audio.js';
 
 // ═══════════════════════════════════════════════════════════════
 //  🧍  ESTADO DEL JUGADOR
@@ -29,6 +31,25 @@ export const player = {
   velocity   : new THREE.Vector3(0, 0, 0),
   isOnGround : false,
 };
+
+// ═══════════════════════════════════════════════════════════════
+//  🦶  ACUMULADOR DE PASOS
+//  ─────────────────────────────────────────────────────────────
+//  stepAccumulator suma la distancia XZ recorrida en cada frame.
+//  Cuando supera el umbral STEP_THRESHOLD (≈ longitud de un paso),
+//  se reproduce un sonido de paso y el acumulador se reinicia.
+//
+//  Umbral de 1.8 unidades ≈ la cadencia visual del head bob,
+//  que a BOB_SPEED=11 ciclos/seg produce un zancada cada ~0.57s
+//  (velocidad de caminata real de Minecraft: ~4.3 bloques/seg,
+//   paso efectivo cada ~1.3 bloques en velocidad de marcha normal).
+// ═══════════════════════════════════════════════════════════════
+
+/** Distancia XZ acumulada desde el último sonido de paso. */
+let stepAccumulator = 0;
+
+/** Umbral de distancia (bloques) para disparar un nuevo sonido de paso. */
+const STEP_THRESHOLD = 1.8;
 
 // ═══════════════════════════════════════════════════════════════
 //  🕹️  TECLADO
@@ -259,7 +280,46 @@ export function updatePhysics(dt, camera, controls) {
     player.velocity.set(0, 0, 0);
   }
 
-  // 5. ── SINCRONIZAR CÁMARA CON HEAD BOBBING ──────────────────
+  // 5. ── SONIDO DE PASOS ──────────────────────────────────────
+  //
+  //  ALGORITMO:
+  //  a) Calculamos la distancia XZ real recorrida en este frame
+  //     con las velocidades POST-colisión (player.velocity ya reflejan
+  //     si el jugador chocó contra una pared → la distancia real es 0).
+  //  b) Solo acumulamos si el jugador está en el suelo (isOnGround).
+  //     Esto evita sonidos de paso mientras se está en el aire o cayendo.
+  //  c) Umbral STEP_THRESHOLD: cuando la distancia acumulada supera
+  //     ~1.8 bloques, se dispara el sonido y se reinicia el acumulador.
+  //  d) getBlockType con Y - 0.1 para muestrear el bloque inmediatamente
+  //     bajo los pies (recordar: pos.y son los pies → y-0.1 = bloque suelo).
+  //
+  //  NOTA DE RENDIMIENTO: Math.sqrt() en el cálculo de movedXZ es
+  //  necesario aquí porque multiplicamos por dt y necesitamos unidades
+  //  correctas de distancia (bloques), no velocidad al cuadrado.
+  //  Se ejecuta solo una vez por frame y no en el interior de bucles.
+
+  const movedXZ = Math.sqrt(player.velocity.x ** 2 + player.velocity.z ** 2) * dt;
+
+  if (player.isOnGround && movedXZ > 0.01) {
+    stepAccumulator += movedXZ;
+
+    if (stepAccumulator > STEP_THRESHOLD) {
+      stepAccumulator = 0;
+
+      // Muestrear el bloque justo debajo de los pies del jugador.
+      // Y - 0.1 porque player.position.y apunta a los pies: el bloque
+      // de suelo está exactamente en floor(y - epsilon).
+      const floorType = getBlockType(
+        Math.floor(player.position.x),
+        Math.floor(player.position.y - 0.1),
+        Math.floor(player.position.z)
+      );
+
+      playStepSound(floorType);
+    }
+  }
+
+  // 6. ── SINCRONIZAR CÁMARA CON HEAD BOBBING ──────────────────
   //
   //  ALGORITMO:
   //  a) El jugador "está caminando" si tiene velocidad horizontal
