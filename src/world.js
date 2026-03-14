@@ -131,6 +131,19 @@ const texGlass = makeTexture(S, (ctx, w, h) => {
   ctx.fillStyle = 'rgba(255,255,255,0.95)';
   ctx.fillRect(1, 1, 3, 3);
 });
+const texWater = makeTexture(S, (ctx, w, h) => {
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = 'rgba(30,90,180,0.60)';
+  ctx.fillRect(0, 0, w, h);
+  for (let i = 0; i < 30; i++) {
+    ctx.fillStyle = `rgba(${20 + (Math.random() * 40) | 0},${70 + (Math.random() * 60) | 0},${160 + (Math.random() * 60) | 0},0.55)`;
+    ctx.fillRect((Math.random() * w) | 0, (Math.random() * h) | 0, 1, 1);
+  }
+  ctx.fillStyle = 'rgba(120,200,255,0.30)';
+  ctx.fillRect(0, 0, w, 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  ctx.fillRect((w / 2 - 2) | 0, (h / 2 - 1) | 0, 4, 2);
+});
 const texTorchStick = makeTexture(S, (ctx, w, h) => {
   noiseFill(ctx, 0, 0, w, h, ['#5a2e0c','#6b3a1f','#4a2008','#7a4828']);
   ctx.fillStyle = 'rgba(255,180,80,0.15)';
@@ -172,6 +185,10 @@ export const MATERIALS = {
   glass:  Array.from({ length: 6 }, () => new THREE.MeshLambertMaterial({
     map: texGlass, transparent: true, opacity: 0.55, depthWrite: false,
   })),
+  water: Array.from({ length: 6 }, () => new THREE.MeshLambertMaterial({
+    map: texWater, transparent: true, opacity: 0.7,
+    side: THREE.DoubleSide, depthWrite: false,
+  })),
   torch: [
     new THREE.MeshLambertMaterial({ map: texTorchStick }),
     new THREE.MeshLambertMaterial({ map: texTorchStick }),
@@ -188,8 +205,8 @@ export const MATERIALS = {
 
 export const blockMap = new Map();
 
-const TRANSPARENT_TYPES = new Set(['glass', 'leaves', 'torch']);
-const INSTANCED_TYPES   = ['grass', 'dirt', 'stone', 'wood', 'leaves', 'sand', 'glass'];
+const TRANSPARENT_TYPES = new Set(['glass', 'leaves', 'torch', 'water']);
+const INSTANCED_TYPES   = ['grass', 'dirt', 'stone', 'wood', 'leaves', 'sand', 'glass', 'water'];
 
 // ── Chunk-Level Mesh Storage ──────────────────────────────────────
 //  Key  : "cx,cz"
@@ -450,7 +467,7 @@ export function getBlockMeshes() {
 //  (generación de terreno, deserialización).
 // ═══════════════════════════════════════════════════════════════
 
-export function addBlock(x, y, z, type = 'grass', normal = null, { rebuild = true } = {}) {
+export function addBlock(x, y, z, type = 'grass', normal = null, { rebuild = true, waterLevel = 8 } = {}) {
   const key = blockKey(x, y, z);
   if (blockMap.has(key)) return;
 
@@ -515,6 +532,7 @@ export function addBlock(x, y, z, type = 'grass', normal = null, { rebuild = tru
     type,
     normal : null,
     isSolid: !TRANSPARENT_TYPES.has(type),
+    waterLevel: type === 'water' ? waterLevel : 0,
   });
 
   if (rebuild) {
@@ -813,6 +831,70 @@ export function deserializeWorld(blocksArray) {
     buildChunkMesh(ccx, ccz);
   }
 }
+// ═══════════════════════════════════════════════════════════════
+//  updateFluids — Motor de fluidos (agua) Fase 1
+//  ─────────────────────────────────────────────────────────────
+//  Itera sobre todos los bloques 'water' en blockMap y propaga:
+//    a) Hacia abajo (y-1): si vacío o no sólido → agua con level=8
+//    b) Horizontalmente (±x, ±z): si el bloque de abajo es sólido
+//       y el nivel actual > 1 → agua con level-1
+//
+//  Optimización: acumula chunks modificados y reconstruye sus
+//  mallas una sola vez al final del tick.
+// ═══════════════════════════════════════════════════════════════
+
+export function updateFluids() {
+  const CS = CONFIG.CHUNK_SIZE;
+  const dirtyChunks = new Set();
+
+  const waterBlocks = [];
+  for (const data of blockMap.values()) {
+    if (data.type === 'water') waterBlocks.push(data);
+  }
+
+  for (const data of waterBlocks) {
+    const { x, y, z, waterLevel } = data;
+
+    const belowKey = blockKey(x, y - 1, z);
+    const below = blockMap.get(belowKey);
+
+    if (!below || (below.type !== 'water' && !below.isSolid)) {
+      if (below && below.type !== 'water') {
+        removeBlock(x, y - 1, z, { rebuild: false });
+        dirtyChunks.add(chunkKey(Math.floor(x / CS), Math.floor(z / CS)));
+      }
+      if (!blockMap.has(belowKey)) {
+        addBlock(x, y - 1, z, 'water', null, { rebuild: false, waterLevel: 8 });
+        dirtyChunks.add(chunkKey(Math.floor(x / CS), Math.floor((z) / CS)));
+      }
+    } else if (below && below.isSolid) {
+      if (waterLevel > 1) {
+        const horizDirs = [[1,0],[-1,0],[0,1],[0,-1]];
+        for (const [dx, dz] of horizDirs) {
+          const nx = x + dx;
+          const nz = z + dz;
+          const neighborKey = blockKey(nx, y, nz);
+          const neighbor = blockMap.get(neighborKey);
+
+          if (!neighbor) {
+            addBlock(nx, y, nz, 'water', null, { rebuild: false, waterLevel: waterLevel - 1 });
+            dirtyChunks.add(chunkKey(Math.floor(nx / CS), Math.floor(nz / CS)));
+          } else if (!neighbor.isSolid && neighbor.type !== 'water') {
+            removeBlock(nx, y, nz, { rebuild: false });
+            addBlock(nx, y, nz, 'water', null, { rebuild: false, waterLevel: waterLevel - 1 });
+            dirtyChunks.add(chunkKey(Math.floor(nx / CS), Math.floor(nz / CS)));
+          }
+        }
+      }
+    }
+  }
+
+  for (const key of dirtyChunks) {
+    const [ccx, ccz] = key.split(',').map(Number);
+    buildChunkMesh(ccx, ccz);
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  checkLeafDecay — Simulación de caída de hojas
 //  ─────────────────────────────────────────────────────────────

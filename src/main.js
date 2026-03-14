@@ -18,7 +18,7 @@ import { PointerLockControls } from 'three/addons/controls/PointerLockControls.j
 import { CONFIG }                           from './config.js';
 import { initWorld, updateChunks, resetChunks, blockMap, hasBlock,
          serializeWorld, deserializeWorld,
-         checkLeafDecay }                    from './world.js';
+         checkLeafDecay, updateFluids }      from './world.js';
 import { initPlayer, updatePhysics, player } from './player.js';
 import { initInteraction, updateRaycaster, getTargetBlock } from './interaction.js';
 import { initUI, updateHUD }                from './ui.js';
@@ -558,6 +558,7 @@ window.addEventListener('resize', () => {
 // ═══════════════════════════════════════════════════════════════
 
 const clock = new THREE.Clock();
+let waterTimer = 0;
 
 function animate() {
   requestAnimationFrame(animate);
@@ -605,6 +606,12 @@ function animate() {
     updateOtherPlayers();  // multiplayer: interpolar posiciones remotas
     updateHUD(player, blockMap, getTargetBlock());
     checkLeafDecay();
+
+    waterTimer += dt;
+    if (waterTimer >= 0.2) {
+      waterTimer -= 0.2;
+      updateFluids();
+    }
   }
 
   // Environment se actualiza siempre (día/noche visible en el menú también)

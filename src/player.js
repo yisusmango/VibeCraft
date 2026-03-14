@@ -126,7 +126,7 @@ function initKeyboard() {
 //  Para añadir nuevos bloques no sólidos en el futuro (flores,
 //  setas, etc.) basta con añadir su clave aquí.
 // ═══════════════════════════════════════════════════════════════
-const NON_SOLID_TYPES = new Set(['torch']);
+const NON_SOLID_TYPES = new Set(['torch', 'water']);
 
 /**
  * Comprueba si la posición hipotética `pos` colisiona con algún bloque
