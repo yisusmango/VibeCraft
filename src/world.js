@@ -95,10 +95,20 @@ const texWood = makeTexture(S, (ctx, w, h) => {
   ctx.fillRect(0, h - 2, w, 2);
 });
 const texLeaves = makeTexture(S, (ctx, w, h) => {
+  // 1. Solid base coat — all pixels start at alpha = 1 (hex colours = fully opaque)
   noiseFill(ctx, 0, 0, w, h, ['#2d6e1e','#1f5214','#3a7e28','#255c18','#4a8a32']);
+
+  // 2. Bright highlight specks — higher opacity so they read through the canopy
   for (let i = 0; i < 14; i++) {
-    ctx.fillStyle = 'rgba(110,210,60,0.28)';
+    ctx.fillStyle = 'rgba(110,210,60,0.8)';
     ctx.fillRect((Math.random() * (w - 2)) | 0, (Math.random() * (h - 2)) | 0, 2, 2);
+  }
+
+  // 3. Punch fully-transparent holes (alpha = 0) for alphaTest: 0.5 to discard.
+  //    clearRect writes alpha = 0 unconditionally, bypassing the compositing mode —
+  //    the only Canvas 2D op that guarantees absolute transparency on existing pixels.
+  for (let i = 0; i < 50; i++) {
+    ctx.clearRect((Math.random() * w) | 0, (Math.random() * h) | 0, 1, 1);
   }
 });
 const texSand = makeTexture(S, (ctx, w, h) => {
@@ -145,7 +155,19 @@ export const MATERIALS = {
   dirt:   Array.from({ length: 6 }, () => new THREE.MeshLambertMaterial({ map: texDirt   })),
   stone:  Array.from({ length: 6 }, () => new THREE.MeshLambertMaterial({ map: texStone  })),
   wood:   Array.from({ length: 6 }, () => new THREE.MeshLambertMaterial({ map: texWood   })),
-  leaves: Array.from({ length: 6 }, () => new THREE.MeshLambertMaterial({ map: texLeaves })),
+  leaves: Array.from({ length: 6 }, () => new THREE.MeshLambertMaterial({
+    map: texLeaves,
+    alphaTest: 0.5,
+    side: THREE.DoubleSide,
+    // Polygon offset shifts the depth value of leaf fragments slightly toward the camera
+    // before the Z-buffer write. This breaks the depth tie between coplanar faces of
+    // adjacent leaf blocks — the GPU no longer flips the depth winner frame-to-frame.
+    // factor: -1 scales the bias by the fragment's slope (handles oblique angles).
+    // units:  -1 adds a fixed minimum bias (handles head-on, slope ≈ 0 views).
+    polygonOffset      : true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits : -1,
+  })),
   sand:   Array.from({ length: 6 }, () => new THREE.MeshLambertMaterial({ map: texSand   })),
   glass:  Array.from({ length: 6 }, () => new THREE.MeshLambertMaterial({
     map: texGlass, transparent: true, opacity: 0.55, depthWrite: false,
