@@ -138,7 +138,7 @@ initWorld(scene);
 // generateDefaultWorld() ya no se llama aquí:
 // cada mundo se carga/crea desde el Gestor de Mundos en los listeners de abajo.
 
-initPlayer(controls);
+initPlayer(controls, camera);
 initInteraction(scene, controls);
 initUI(controls);
 // initMultiplayer() ya NO se llama aquí en el arranque.
