@@ -27,6 +27,7 @@ import { getAllWorlds, saveWorld,
          loadWorld,   deleteWorld }         from './storage.js';
 import { initMultiplayer, sendUpdate,
          updateOtherPlayers }               from './multiplayer.js';
+import { initAudio, resumeAudio }           from './audio.js';
 
 // ═══════════════════════════════════════════════════════════════
 //  🖥️  RENDERER
@@ -143,6 +144,12 @@ initUI(controls);
 // initMultiplayer() ya NO se llama aquí en el arranque.
 // Se invoca bajo demanda en startMultiplayer() cuando el jugador elige Multijugador.
 
+// ── Audio: debe inicializarse después de que la cámara exista ────
+//  initAudio añade el AudioListener como hijo de la cámara, por lo que
+//  la cámara ya debe estar creada (línea ~70 de este archivo).
+//  Se coloca aquí, con el resto de inits, antes del bucle de animación.
+initAudio(camera);
+
 // ═══════════════════════════════════════════════════════════════
 //  🏠  BOTÓN SINGLEPLAYER — transición Menú → Juego
 //  ─────────────────────────────────────────────────────────────
@@ -166,11 +173,18 @@ let currentWorldId   = null;
 let currentWorldName = '';
 
 // ── Lanzamiento de partida ───────────────────────────────────────
+//  resumeAudio() DEBE ir antes de controls.lock() porque ambas
+//  operaciones se producen dentro del mismo gesto de usuario (clic).
+//  El navegador concede el permiso de AudioContext.resume() solo
+//  mientras la pila de llamadas sigue siendo sincrónica respecto al
+//  evento original. controls.lock() no consume el gesto, pero por
+//  semántica y claridad mantenemos el audio primero.
 function launchWorld() {
   isMenuVisible = false;
   document.body.classList.remove('menu-active');
   controls.getObject().rotation.set(0, 0, 0);
   camera.rotation.set(0, 0, 0);
+  resumeAudio();   // desbloquear AudioContext dentro del gesto de usuario
   controls.lock();
 }
 
