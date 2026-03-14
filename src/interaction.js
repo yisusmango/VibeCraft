@@ -89,13 +89,23 @@ export function updateRaycaster(camera, controls) {
   raycaster.setFromCamera(NDC_CENTER, camera);
   const hits = raycaster.intersectObjects(getBlockMeshes());
 
-  if (hits.length === 0) {
+  let validHit = null;
+  for (const h of hits) {
+    if (h.instanceId !== undefined && h.object.userData.instances) {
+      const inst = h.object.userData.instances[h.instanceId];
+      if (inst && inst.type === 'water') continue;
+    }
+    validHit = h;
+    break;
+  }
+
+  if (!validHit) {
     targetBlock = targetFaceNormal = null;
     highlightMesh.visible = false;
     return;
   }
 
-  const hit = hits[0];
+  const hit = validHit;
 
   // ── ¿Hit sobre un InstancedMesh? ─────────────────────────────────
   //  hit.instanceId es un número ≥ 0 cuando el objeto golpeado es un
@@ -214,7 +224,7 @@ function placeBlock() {
 
   const selectedType = getCurrentBlockType();
 
-  if (hasBlock(nx, ny, nz))                         return;
+  if (hasBlock(nx, ny, nz) && getBlockType(nx, ny, nz) !== 'water') return;
   if (wouldOverlapPlayer(nx, ny, nz, selectedType)) return;
 
   addBlock(nx, ny, nz, selectedType, targetFaceNormal);
