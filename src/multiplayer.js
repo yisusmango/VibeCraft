@@ -62,6 +62,9 @@ let _scene     = null;
 let _myId      = null;
 let _sendTimer = 0;
 
+const REMOTE_PUNCH_DURATION = 0.20;
+const REMOTE_PUNCH_ANGLE    = Math.PI / 3;
+
 // otherPlayers: Map<socketId, {
 //   group,       — THREE.Group devuelto por createPlayerModel()
 //   targetPos,   — Vector3 objetivo para lerp de posición
@@ -318,6 +321,15 @@ export function initMultiplayer(scene) {
           );
         });
 
+        // ── Acción de punch remoto ────────────────────────────────────
+        _socket.on('playerAction', ({ id, action }) => {
+          if (id === _myId) return;
+          if (action === 'punch') {
+            const entry = otherPlayers.get(id);
+            if (entry) entry.punchTimer = 0;
+          }
+        });
+
         // ── Jugador desconectado ──────────────────────────────────────
         _socket.on('playerLeft', ({ id }) => {
           const entry = otherPlayers.get(id);
@@ -448,6 +460,7 @@ function _upsertPlayer(data) {
       targetRotY: initRotY,
       targetRotX: data.rot?.x ?? 0,   // pitch para el asentido de cabeza
       walkPhase:  0,                   // acumulador del ciclo de caminata
+      punchTimer: -1,                  // <0 = no punching; ≥0 = animando
       skin,
       username,
       sprite,
@@ -538,6 +551,11 @@ export function sendBlockUpdate(action, x, y, z, type = null, normal = null) {
     action, x, y, z, type,
     normal: normal ? { x: normal.x, y: normal.y, z: normal.z } : null,
   });
+}
+
+export function sendPunchAction() {
+  if (!_socket?.connected) return;
+  _socket.emit('playerAction', { action: 'punch' });
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -658,9 +676,19 @@ export function updateOtherPlayers() {
 
     // Walk swing: oscilación cruzada brazos ↔ piernas, estilo Minecraft
     const swing = Math.sin(entry.walkPhase) * (Math.PI / 4);
-    parts.armR.rotation.x =  swing;
     parts.armL.rotation.x = -swing;
     parts.legR.rotation.x = -swing;
     parts.legL.rotation.x =  swing;
+
+    // Punch override en armR: si punchTimer ≥ 0, animar golpe rápido
+    if (entry.punchTimer >= 0) {
+      entry.punchTimer += 0.016;
+      const t    = Math.min(entry.punchTimer / REMOTE_PUNCH_DURATION, 1);
+      const ease = Math.sin(t * Math.PI);
+      parts.armR.rotation.x = -REMOTE_PUNCH_ANGLE * ease;
+      if (t >= 1) entry.punchTimer = -1;
+    } else {
+      parts.armR.rotation.x = swing;
+    }
   }
 }
