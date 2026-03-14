@@ -155,6 +155,18 @@ const ICON_PAINTERS = {
     ctx.fillStyle = 'rgba(255,255,255,1)';
     ctx.fillRect(2, 2, 4, 4);
   },
+  water(ctx, w, h) {
+    ctx.fillStyle = 'rgba(30,100,210,0.80)';
+    ctx.fillRect(0, 0, w, h);
+    for (let i = 0; i < 18; i++) {
+      ctx.fillStyle = `rgba(${50 + (Math.random() * 40) | 0},${120 + (Math.random() * 60) | 0},${200 + (Math.random() * 55) | 0},0.6)`;
+      ctx.fillRect((Math.random() * w) | 0, (Math.random() * h) | 0, 2, 1);
+    }
+    ctx.fillStyle = 'rgba(140,210,255,0.35)';
+    ctx.fillRect(0, 0, w, 3);
+    ctx.fillStyle = 'rgba(255,255,255,0.25)';
+    ctx.fillRect(3, 3, 5, 2);
+  },
   torch(ctx, w, h) {
     const cx = (w / 2) | 0;
     // Palo: rectángulo marrón oscuro de 4px de ancho
