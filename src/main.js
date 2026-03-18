@@ -26,7 +26,8 @@ import { Environment }                      from './environment.js';
 import { getAllWorlds, saveWorld,
          loadWorld,   deleteWorld }         from './storage.js';
 import { initMultiplayer, sendUpdate,
-         updateOtherPlayers }               from './multiplayer.js';
+         updateOtherPlayers,
+         sendAdminTimeUpdate }              from './multiplayer.js';
 import { initAudio, resumeAudio }           from './audio.js';
 
 // ═══════════════════════════════════════════════════════════════
@@ -421,6 +422,9 @@ document.getElementById('btn-quit').addEventListener('click', async () => {
       console.error('[VibeCraft] Error al guardar en btn-quit:', err);
     }
   }
+  // Desactivar la sincronización de tiempo con el servidor al volver al menú.
+  // En singleplayer el reloj debe volver a avanzar localmente en update().
+  environment.isServerSynced = false;
   document.getElementById('overlay').style.display = 'none';
   document.body.classList.add('menu-active');
   isMenuVisible = true;
@@ -443,8 +447,16 @@ async function startMultiplayer() {
   btn.disabled     = true;
 
   try {
-    // AWAIT: bloquea hasta recibir SERVER_SEED — sin carrera posible
-    await initMultiplayer(scene);
+    // AWAIT: bloquea hasta recibir SERVER_SEED — sin carrera posible.
+    // Pasamos `environment` para que multiplayer.js pueda inyectar dayT
+    // desde worldInit (sincronización inicial del reloj día/noche).
+    await initMultiplayer(scene, environment);
+
+    // El servidor ha enviado su dayT canónico vía worldInit (ya aplicado
+    // por setDayT() dentro de multiplayer.js). Activamos isServerSynced
+    // para que update() deje de avanzar _dayT localmente — el reloj lo
+    // controla ahora el servidor (y las correcciones periódicas timeUpdate).
+    environment.isServerSynced = true;
 
     // Semilla ya inyectada en world.js; ahora es seguro generar terreno
     currentWorldId   = null;   // multijugador no usa IndexedDB local
@@ -507,6 +519,9 @@ const environment = new Environment(scene, ambientLight, sunLight);
     if (!btn) return;
     const phase = btn.dataset.phase;
     environment.setTime(phase);
+    // En multijugador, propagar el cambio de hora al servidor para que
+    // todos los demás clientes se sincronicen al nuevo tiempo inmediatamente.
+    if (environment.isServerSynced) sendAdminTimeUpdate(environment.dayT);
     setActiveBtn(phase);
   });
 
@@ -536,6 +551,9 @@ const environment = new Environment(scene, ambientLight, sunLight);
     if (!phase) return;
     e.preventDefault();                          // evita scroll u otros defaults
     environment.setTime(phase);
+    // En multijugador, propagar el cambio de hora al servidor para que
+    // todos los demás clientes se sincronicen al nuevo tiempo inmediatamente.
+    if (environment.isServerSynced) sendAdminTimeUpdate(environment.dayT);
     setActiveBtn(phase);
   });
 
