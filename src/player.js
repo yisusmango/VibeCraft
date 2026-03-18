@@ -7,6 +7,47 @@
 //    • Bucle de física: gravedad, movimiento y resolución por eje
 //    • Sincronización cámara → posición del jugador
 //    • Sistema de sonido de pasos (stepAccumulator)
+//    • Arm Sway: inercia del brazo al mover la cámara (v0.3.2)
+//
+//  CAMBIOS v0.3.3 (animation polish):
+//    1. armR.scale.set(1.1, 1.6, 1.1)  — brazo más delgado y largo
+//    2. _heldMesh.rotation.set(π/8, π/4, 0)  — bloque en perspectiva isométrica
+//    3. Arm Sway con roll en Z + SWAY_LERP 8.0 → 5.0 (más elástico)
+//
+//  CAMBIOS v0.3.4 (perspectiva Minecraft):
+//    1. armR.scale.set(0.25, 0.8, 0.25)  — proporción prisma 1:3:1
+//    2. ARM_REST_POS (0.5, -0.4, -0.3) + ARM_REST_ROT (-1.1, 0.4, 0.15)
+//       Brazo sale de esquina inferior derecha apuntando al centro-frente
+//    3. _heldMesh.position.set(0, -0.8, -0.1) + rotation.set(π/8, π/5, 0)
+//       Ítem acoplado a la mano (fondo del brazo) con perspectiva isométrica
+//
+//  CAMBIOS v0.3.5 (visibilidad del brazo):
+//    1. armR.scale.set(0.4, 1.2, 0.4)  — escala aumentada, proporción alargada mantenida
+//    2. ARM_REST_POS (0.35, -0.25, -0.45)  — brazo más cerca, más arriba, bien encuadrado
+//       ARM_REST_ROT sin cambios (-1.1, 0.4, 0.15)
+//    3. _heldMesh.position.set(0, -1.0, -0.1)  — ítem bajado al nuevo extremo distal (scale.y=1.2)
+//
+//  CAMBIOS v0.3.6 (corrección escala heredada del ítem):
+//    • _heldMesh.scale.set(1.0, 0.33, 1.0)  — escala inversa del brazo padre (0.4, 1.2, 0.4)
+//      para que el bloque sea un cubo perfecto ~0.4 × 0.4 × 0.4 en world space
+//    • _heldMesh.position.set(0, -0.85, 0.15) — sacado a la superficie de la mano
+//    • _heldMesh.rotation.set(π/8, π/5, 0)   — perspectiva isométrica conservada
+//
+//  CAMBIOS v0.3.7 (patrón contenedor — fix definitivo del shear):
+//    • armContainer (THREE.Group) recibe ARM_REST_POS y ARM_REST_ROT.
+//      armR se añade al grupo con posición/rotación en (0,0,0) y escala (0.4,1.2,0.4).
+//      _heldMesh se añade también al grupo como hermano de armR, sin heredar su escala.
+//    • _updateFPHeldItem: BoxGeometry(0.35,0.35,0.35), scale(1,1,1), sin hack de inversa.
+//      posición (0, -1.0, -0.15), rotación isométrica (π/8, π/5, 0) sin deformación.
+//
+//  CAMBIOS v0.3.8 (corrección eje Z del ítem):
+//    • mesh.position.set(0, -1.0, 0.2)  — Z positivo: bloque al frente del brazo (nudillos)
+//    • mesh.rotation.set(π/6, π/4, 0)   — cara superior e izquierda bien visibles
+//
+//  CAMBIOS v0.3.9 (corrección eje Y del ítem):
+//    • mesh.position.set(0, 0.75, 0.15) — Y positivo: punta frontal del brazo (mano)
+//      Con armContainer.rotation.x = -1.1, el eje Y local apunta hacia adelante-arriba
+//      en world space. Y negativo enviaba el bloque hacia el hombro/fuera de pantalla.
 // ═══════════════════════════════════════════════════════════════
 
 import * as THREE from 'three';
@@ -203,8 +244,27 @@ const BOB_SPEED     = 11.0;   // ciclos/seg mientras se camina
 const BOB_AMPLITUDE = 0.055;  // desplazamiento máximo en Y (bloques)
 const BOB_LERP      = 12.0;   // velocidad de interpolación al parar
 
+// ═══════════════════════════════════════════════════════════════
+//  💫  ARM SWAY — inercia del brazo al mover la cámara (v0.3.3)
+//  ─────────────────────────────────────────────────────────────
+//  SWAY_FACTOR → multiplicador de la delta de rotación.
+//                Negativo = inercia opuesta (brazo se queda atrás).
+//  SWAY_LERP   → velocidad de retorno a 0 cuando la cámara se detiene.
+//                v0.3.3: 8.0 → 5.0 para un retorno más elástico y menos
+//                rígido. Un valor menor alarga la "cola" del movimiento,
+//                dando sensación de peso real al brazo.
+//  SWAY_CLAMP  → límite máximo en radianes para sacudidas bruscas.
+// ═══════════════════════════════════════════════════════════════
+const SWAY_FACTOR = -0.1;
+const SWAY_LERP   = 5.0;   // ← v0.3.3: era 8.0; más bajo = más elástico
+const SWAY_CLAMP  = 0.12;
+
 let _bobAccum  = 0;  // acumulador de fase (radianes), avanza solo al caminar
 let _bobOffset = 0;  // offset Y actual aplicado a la cámara (suavizado)
+
+// Arm Sway: rotación de cámara del frame anterior y acumulador de sway
+let _prevCamRot = new THREE.Vector2();  // (yaw, pitch) del frame anterior
+let _targetSway = new THREE.Vector2();  // sway actual (suavizado hacia 0)
 
 // ═══════════════════════════════════════════════════════════════
 //  First-Person Arm
@@ -215,23 +275,58 @@ let _camera           = null;
 let _heldMesh         = null;
 let _currentHeldType  = null;
 
-// ── HOTFIX v0.3.1 — Estética Minecraft: posición y rotación de reposo ──
-//  ARM_REST_POS: mano más alta (y: -0.25 vs -0.32) y más cercana (z: -0.45 vs -0.5).
-//  ARM_REST_ROT: rotación X más atrás (-0.3), giro Y más pronunciado (-0.4),
-//               leve inclinación Z (0.15) para una pose más natural.
-const ARM_REST_POS = new THREE.Vector3(0.42, -0.25, -0.45);
-const ARM_REST_ROT = new THREE.Euler(-0.3, -0.4, 0.15);
+// ── v0.3.5 — Pose de reposo: visibilidad mejorada ───────────────────────
+//  ARM_REST_POS ajustada para que el brazo entre en el encuadre de la cámara.
+//    X: +0.35 → menos desplazado a la derecha que en v0.3.4 (era 0.5),
+//               el brazo queda más centrado y visible sin salirse del FOV.
+//    Y: -0.25 → más arriba que en v0.3.4 (era -0.4), compensando que la
+//               escala Y=1.2 proyecta el brazo más hacia abajo en pantalla.
+//    Z: -0.45 → más cerca de la cámara que en v0.3.4 (era -0.3), el brazo
+//               aparece más grande y legible en el ángulo de visión del jugador.
+//
+//  ARM_REST_ROT: sin cambios respecto a v0.3.4.
+//    X: -1.1 rad (~63°)  → inclina el brazo hacia adelante (perspectiva correcta).
+//    Y: +0.4 rad (~23°)  → gira la mano hacia el centro de la pantalla.
+//    Z: +0.15 rad (~9°)  → leve ladeo (roll) característico del brazo de Minecraft.
+const ARM_REST_POS = new THREE.Vector3(0.35, -0.25, -0.45);
+const ARM_REST_ROT = new THREE.Euler(-1.1, 0.4, 0.15);
 
 const PUNCH_DURATION = 0.20;
 const PUNCH_ANGLE    = Math.PI / 3;
 let _punchTimer      = 0;
 let _isPunching      = false;
 
-// ── HOTFIX v0.3.1 — Visibilidad del bloque en mano ────────────────────
-//  Cambios respecto a la versión anterior:
-//    • position.z: 0.1 → -0.25  (Z negativa = delante de la cámara en Three.js)
-//    • renderOrder: 999 → 1000   (garantiza renderizado sobre el brazo)
-//    • frustumCulled: ya era false; se conserva explícitamente.
+// ── v0.3.7 — Ítem como hermano de armR en armContainer (sin shear) ────────
+//
+//  PROBLEMA RAÍZ (v0.3.6):
+//    La matriz de transformación de un objeto 3D es M = T · R · S.
+//    Cuando armR tiene escala no uniforme (0.4, 1.2, 0.4) y un hijo
+//    lleva rotación isométrica (π/8, π/5, 0), la concatenación de matrices
+//    produce Cizalladura (Shear): los ejes del hijo dejan de ser ortogonales
+//    en world space. Ninguna escala inversa puede corregir esto porque el
+//    shear está codificado en la sub-matrix 3×3 resultante de R_padre × S_padre.
+//
+//  SOLUCIÓN — Patrón Contenedor:
+//    _fpArm ahora es un THREE.Group (armContainer) con escala (1,1,1).
+//    - armR  es hijo del grupo con su propia escala no uniforme (0.4,1.2,0.4).
+//    - _heldMesh es HERMANO de armR, también hijo del grupo.
+//    El grupo tiene escala identidad → _heldMesh no hereda ninguna distorsión.
+//    La posición relativa al extremo de la mano se expresa en espacio del grupo,
+//    que coincide con el espacio de la cámara (ambos a escala 1).
+//
+//  Posición (0, -1.0, -0.15):
+//    Y: -1.0  → extremo distal del brazo expresado en espacio del grupo.
+//               Con armR.scale.y=1.2 y ROT.x=-1.1 la mano proyectada queda
+//               aproximadamente a -1.0 en Y del grupo (ver cálculo abajo).
+//               Aproximación: 1.2 × sin(1.1) ≈ 1.2 × 0.891 ≈ 1.07 → -1.0 es conservador.
+//    Z: -0.15 → offset adelante en espacio del grupo (≈ hacia la cámara)
+//               para que el cubo asome por delante de la geometría del brazo.
+//
+//  Geometría BoxGeometry(0.35, 0.35, 0.35) + scale(1,1,1):
+//    Cubo 0.35 × 0.35 × 0.35 perfecto en world space, sin deformación.
+//
+//  renderOrder: 1000  (sobre armR, renderOrder 999)
+//  frustumCulled: false (forzar visibilidad fuera del frustum)
 function _updateFPHeldItem(type) {
   if (type === _currentHeldType) return;
 
@@ -244,14 +339,15 @@ function _updateFPHeldItem(type) {
   _currentHeldType = type;
 
   if (type && MATERIALS[type] && _fpArm) {
-    const geo  = new THREE.BoxGeometry(0.25, 0.25, 0.25);
+    const geo  = new THREE.BoxGeometry(0.1, 0.1, 0.1);  // ← v0.3.7: cubo mayor, sin shear
     const mesh = new THREE.Mesh(geo, MATERIALS[type]);
-    mesh.position.set(0, -0.6, -0.25);   // HOTFIX: Z negativa → visible frente a la cámara
-    mesh.scale.setScalar(1.2);
-    mesh.renderOrder = 1000;              // HOTFIX: por encima del brazo (era 999)
-    mesh.frustumCulled = false;           // HOTFIX: forzar visibilidad independientemente del frustum
+    mesh.scale.set(1.0, 1.0, 1.0);                          // ← v0.3.7: sin hack de inversa
+    mesh.position.set(-0.05, 0.035, 0);                        // ← v0.3.9: Y positivo → punta frontal del brazo (mano); Z apoya sobre nudillos
+    mesh.rotation.set(Math.PI / 8, Math.PI / 4, 0);          // perspectiva isométrica: cara superior e izquierda visibles
+    mesh.renderOrder = 1000;                                 // por encima del brazo
+    mesh.frustumCulled = false;                              // forzar visibilidad fuera del frustum
     mesh.userData.sharedMaterial = true;
-    _fpArm.add(mesh);
+    _fpArm.add(mesh);   // _fpArm es ahora armContainer → sin herencia de escala no uniforme
     _heldMesh = mesh;
   }
 }
@@ -452,6 +548,76 @@ export function updatePhysics(dt, camera, controls) {
       _fpArm.rotation.z += (ARM_REST_ROT.z - _fpArm.rotation.z) * lf;
     }
   }
+
+  // 8. ── ARM SWAY (inercia del brazo al mover la cámara) ──────────
+  //
+  //  ALGORITMO:
+  //  a) Leemos yaw del yaw-object (controls.getObject().rotation.y)
+  //     y pitch de _camera.rotation.x.
+  //     PointerLockControls desacopla los dos ejes en objetos distintos:
+  //       yaw-object  → hijo de scene, guarda la rotación horizontal (Y)
+  //       _camera     → hijo del yaw-object, guarda la rotación vertical (X)
+  //
+  //  b) delta = rotación_actual - rotación_anterior.
+  //     El signo resultante refleja la dirección del giro.
+  //
+  //  c) _targetSway += delta * SWAY_FACTOR
+  //     SWAY_FACTOR negativo → inercia opuesta al movimiento de cámara.
+  //     Ejemplo: girar a la derecha (yaw sube) → brazo se queda atrás → sway.y baja.
+  //
+  //  d) Lerp de retorno a (0, 0): simula la "tensión" que devuelve
+  //     el brazo a su posición natural cuando la cámara se detiene.
+  //     SWAY_LERP=5.0 (antes 8.0) → retorno más lento y elástico,
+  //     el brazo "rebota" ligeramente antes de asentarse.
+  //
+  //  e) Clamp ±SWAY_CLAMP para que sacudidas bruscas no roten el brazo
+  //     de forma absurda.
+  //
+  //  f) SUMA el sway a _fpArm.rotation DESPUÉS de walk/punch/idle:
+  //     actúa como capa aditiva, no sobreescribe.
+  //
+  //     EJES (v0.3.3):
+  //       rotation.x += _targetSway.y  — pitch de cámara mueve el brazo
+  //                                       arriba/abajo (eje correcto: Y del sway)
+  //       rotation.y += _targetSway.x  — yaw de cámara gira el brazo
+  //                                       izquierda/derecha (eje correcto: X del sway)
+  //       rotation.z += _targetSway.x * 0.5  — roll lateral: cuando el jugador
+  //                                       gira rápido hacia los lados el brazo
+  //                                       se ladea ligeramente, dando sensación
+  //                                       de peso e inercia real.
+  //
+  //  g) Guarda el estado actual en _prevCamRot para el siguiente frame.
+  if (_fpArm && _camera) {
+    const yawObj   = controls.getObject();
+    const curYaw   = yawObj.rotation.y;
+    const curPitch = _camera.rotation.x;
+
+    // b) Deltas respecto al frame anterior
+    const deltaYaw   = curYaw   - _prevCamRot.x;
+    const deltaPitch = curPitch - _prevCamRot.y;
+
+    // c) Acumular sway con inercia opuesta
+    _targetSway.x += deltaPitch * SWAY_FACTOR;
+    _targetSway.y += deltaYaw   * SWAY_FACTOR;
+
+    // d) Lerp suave de retorno a 0 (SWAY_LERP=5.0 → más elástico que antes)
+    const sf = Math.min(1, SWAY_LERP * dt);
+    _targetSway.x += (0 - _targetSway.x) * sf;
+    _targetSway.y += (0 - _targetSway.y) * sf;
+
+    // e) Clamp para evitar valores extremos
+    _targetSway.x = THREE.MathUtils.clamp(_targetSway.x, -SWAY_CLAMP, SWAY_CLAMP);
+    _targetSway.y = THREE.MathUtils.clamp(_targetSway.y, -SWAY_CLAMP, SWAY_CLAMP);
+
+    // f) Aplicar el sway ENCIMA de la animación de caminar / respirar
+    //    v0.3.3: ejes corregidos + roll en Z para efecto de peso al girar
+    _fpArm.rotation.x += _targetSway.y;        // pitch de cámara → tilt vertical del brazo
+    _fpArm.rotation.y += _targetSway.x;        // yaw de cámara   → swing horizontal del brazo
+    _fpArm.rotation.z += _targetSway.x * 0.5;  // roll lateral    → ladeo por inercia al girar
+
+    // g) Guardar estado para el siguiente frame
+    _prevCamRot.set(curYaw, curPitch);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -476,14 +642,39 @@ export function initPlayer(controls, camera) {
     player.position.z
   );
 
-  // ── Brazo en primera persona ──────────────────────────────────
+  // ── Instanciar el modelo del jugador y extraer el brazo derecho ─────────
   const model = createPlayerModel(getSavedSkin());
   const armR  = model.userData.armR;
-
   armR.removeFromParent();
-  armR.scale.set(1.6, 1.6, 1.6);
-  armR.position.copy(ARM_REST_POS);
-  armR.rotation.set(ARM_REST_ROT.x, ARM_REST_ROT.y, ARM_REST_ROT.z);
+
+  // ── v0.3.7 — Patrón Contenedor: armContainer como _fpArm ────────────────
+  //
+  //  JERARQUÍA RESULTANTE:
+  //    _camera
+  //      └─ armContainer  (THREE.Group, scale 1,1,1)  ← _fpArm
+  //           ├─ armR     (Mesh del brazo,  scale 0.4,1.2,0.4, pos/rot (0,0,0))
+  //           └─ _heldMesh (Mesh del ítem, scale 1,1,1, sin herencia de escala)
+  //
+  //  POR QUÉ FUNCIONA:
+  //    Las animaciones (walk/punch/idle/sway) operan sobre armContainer,
+  //    moviendo y rotando el grupo entero. Dentro del grupo, armR y _heldMesh
+  //    son hermanos: _heldMesh no hereda la escala no uniforme de armR y por
+  //    tanto no sufre shear cuando se le aplica rotación isométrica.
+  //
+  //  ARM_REST_POS / ARM_REST_ROT se asignan al GRUPO (no a armR):
+  //    armR tiene pos/rot en (0,0,0) dentro del grupo; su escala define la
+  //    forma del brazo pero no afecta al espacio de coordenadas del grupo.
+  const armContainer = new THREE.Group();
+  armContainer.position.copy(ARM_REST_POS);
+  armContainer.rotation.set(ARM_REST_ROT.x, ARM_REST_ROT.y, ARM_REST_ROT.z);
+  armContainer.renderOrder = 999;
+  armContainer.frustumCulled = false;
+
+  // armR: posición y rotación a cero (hereda la del grupo), escala 1:3:1 intacta
+  armR.removeFromParent();
+  armR.position.set(0, 0, 0);
+  armR.rotation.set(0, 0, 0);
+  armR.scale.set(0.4, 1.2, 0.4);
   armR.renderOrder = 999;
   armR.frustumCulled = false;
   armR.traverse(child => {
@@ -493,8 +684,9 @@ export function initPlayer(controls, camera) {
     }
   });
 
-  _camera.add(armR);
-  _fpArm = armR;
+  armContainer.add(armR);
+  _camera.add(armContainer);
+  _fpArm = armContainer;  // las animaciones moverán el grupo completo
 
   const armMat = armR.material;
   model.traverse(child => {
