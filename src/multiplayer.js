@@ -9,18 +9,33 @@
 //    5. Limpiar mallas al desconectarse un jugador
 //    6. Sincronizar skin propia al conectarse y recibir skins remotas
 //    7. Renderizar el ítem en la mano (heldItem) de jugadores remotos
+//    8. Sincronizar el ciclo de día/noche con el servidor
+//       ─ worldInit:     recibe dayT inicial → environment.setDayT(dayT)
+//       ─ timeUpdate:    recibe corrección periódica (dead-band 0.05)
+//       ─ adminTimeUpdate: emite cambio manual de hora al servidor
 //
 //  PROTOCOLO (ver server.js para el contrato completo):
 //    Emite  → 'playerUpdate'      { id, pos, rot, heldItem }   (cada ~100 ms)
 //    Emite  → 'blockUpdate'       { action, x,y,z, type, normal }
-//    Emite  → 'updateProfile'          { skin, username }        (al conectarse)
-//    Recibe ← 'worldInit'              { seed, players }         (snapshot inicial, incluye skin+username)
-//    Recibe ← 'playerUpdate'           { id, pos, rot, heldItem }(otros jugadores)
-//    Recibe ← 'playerProfileUpdated'   { id, skin, username }    (perfil de un jugador actualizado)
-//    Recibe ← 'blockUpdate'            { action, x,y,z, type, normal }
-//    Recibe ← 'playerLeft'             { id }                    (al desconectarse alguien)
-//    Recibe ← 'chatMessage'            { username, message }     (mensaje de otro jugador)
-//    Emite  → 'chatMessage'            string                    (mensaje del jugador local)
+//    Emite  → 'updateProfile'     { skin, username }           (al conectarse)
+//    Emite  → 'adminTimeUpdate'   { dayT }                     (cambio manual de hora)
+//    Recibe ← 'worldInit'         { seed, dayT, players }      (snapshot inicial)
+//    Recibe ← 'playerUpdate'      { id, pos, rot, heldItem }   (otros jugadores)
+//    Recibe ← 'playerProfileUpdated' { id, skin, username }    (perfil actualizado)
+//    Recibe ← 'blockUpdate'       { action, x,y,z, type, normal }
+//    Recibe ← 'playerLeft'        { id }                       (desconexión)
+//    Recibe ← 'chatMessage'       { username, message }
+//    Recibe ← 'timeUpdate'        { dayT }        (corrección periódica, 10 s)
+//    Emite  → 'chatMessage'       string
+//
+//  MODELO DE SINCRONIZACIÓN DE TIEMPO (Reloj Local Sincronizado):
+//    El reloj del cliente avanza SIEMPRE localmente frame a frame para
+//    garantizar sombras y animaciones sin saltos.
+//    timeUpdate usa un dead-band de 0.05 (wrap-aware): solo hace snap
+//    vía setDayT() si la diferencia es mayor. Si el cliente ya está
+//    cerca del valor del servidor, ignora el paquete y sigue fluido.
+//    adminTimeUpdate propaga cambios manuales de hora al servidor para
+//    que todos los demás clientes se sincronicen inmediatamente.
 //
 //  REPRESENTACIÓN DE OTROS JUGADORES:
 //    THREE.Group generado por createPlayerModel() en SkinModel.js.
@@ -56,11 +71,25 @@ const SERVER_URL    = 'http://localhost:3000';
 const SEND_INTERVAL = 100;   // ms entre paquetes playerUpdate (~10 Hz)
 const LERP_FACTOR   = 0.2;   // factor de interpolación por frame
 
+// ── Dead-band de sincronización de tiempo ───────────────────────
+//  Si la diferencia wrap-aware entre el dayT del servidor y el del cliente
+//  es menor que este umbral, se ignora el timeUpdate y el reloj local
+//  sigue avanzando sin interrupciones → sombras y animaciones fluidas.
+//  Si es mayor, se hace snap vía setDayT() para corregir la deriva.
+//  Valor 0.05 ≈ 1 minuto de ciclo (ciclo total = 1200 s = 20 min).
+const TIME_SNAP_THRESHOLD = 0.05;
+
 // ── Estado del módulo ────────────────────────────────────────────
-let _socket    = null;
-let _scene     = null;
-let _myId      = null;
-let _sendTimer = 0;
+let _socket      = null;
+let _scene       = null;
+let _myId        = null;
+let _sendTimer   = 0;
+
+// ── Referencia al Environment para sincronización de tiempo ──────
+//  Se asigna cuando main.js llama initMultiplayer(scene, environment).
+//  Null en los períodos en los que no hay sesión multijugador activa.
+//  Todos los accesos deben hacer guard: if (_environment) { … }
+let _environment = null;
 
 const REMOTE_PUNCH_DURATION = 0.20;
 const REMOTE_PUNCH_ANGLE    = Math.PI / 3;
@@ -197,11 +226,17 @@ function _disposeGroup(group) {
 
 // ═══════════════════════════════════════════════════════════════
 //  🔌  initMultiplayer — conectar y registrar manejadores de eventos
-//  @param {THREE.Scene} scene
+//  ─────────────────────────────────────────────────────────────
+//  @param {THREE.Scene}      scene       — Escena Three.js principal
+//  @param {Environment|null} environment
+//    Instancia del ciclo día/noche. Si se proporciona, se sincroniza
+//    el reloj con el servidor vía setDayT() al recibir worldInit y
+//    timeUpdate (con dead-band). Puede ser null en tests.
 // ═══════════════════════════════════════════════════════════════
 
-export function initMultiplayer(scene) {
-  _scene = scene;
+export function initMultiplayer(scene, environment = null) {
+  _scene       = scene;
+  _environment = environment;
 
   return new Promise((resolve, reject) => {
     import('http://localhost:3000/socket.io/socket.io.esm.min.js')
@@ -232,12 +267,25 @@ export function initMultiplayer(scene) {
           reject(err);
         });
 
-        // ── worldInit: recibir semilla + snapshot completo (con skins) ──
-        //  players[] incluye { id, pos, rot, skin } donde skin es Data
-        //  URL o null. _upsertPlayer crea el modelo con la skin correcta.
-        _socket.on('worldInit', ({ seed, players }) => {
+        // ── worldInit: recibir semilla + dayT + snapshot completo ─────
+        //  Payload: { seed, dayT, players }
+        //    seed    — semilla de Simplex Noise para generación de terreno.
+        //    dayT    — progreso actual del ciclo de día/noche [0, 1).
+        //              Siempre se hace snap en worldInit (sincronización inicial),
+        //              independientemente del dead-band, porque el cliente acaba
+        //              de arrancar y su reloj parte de 0.
+        //    players — snapshot completo de jugadores conectados.
+        _socket.on('worldInit', ({ seed, dayT, players }) => {
           setNoiseSeed(seed);
           console.info(`[VibeCraft MP] Semilla recibida: ${seed.toFixed(8)} — terreno listo.`);
+
+          // Snap incondicional en la sincronización inicial: el reloj del
+          // cliente parte de 0 y debe saltar al tiempo actual del servidor.
+          if (_environment && typeof dayT === 'number') {
+            _environment.setDayT(dayT);
+            console.info(`[VibeCraft MP] Reloj sincronizado (worldInit): dayT=${dayT.toFixed(4)}`);
+          }
+
           players.forEach(data => {
             if (data.id !== _myId) _upsertPlayer(data);
           });
@@ -328,6 +376,50 @@ export function initMultiplayer(scene) {
             const entry = otherPlayers.get(id);
             if (entry) entry.punchTimer = 0;
           }
+        });
+
+        // ── Corrección periódica del reloj día/noche (dead-band) ──────
+        //
+        //  MODELO "RELOJ LOCAL SINCRONIZADO":
+        //  El reloj cliente ya avanza localmente en environment.update().
+        //  Este handler solo hace snap (setDayT) si la diferencia entre
+        //  el tiempo del servidor y el local supera TIME_SNAP_THRESHOLD (0.05).
+        //  Para diferencias menores, se ignora el paquete → fluidez total.
+        //
+        //  DIFERENCIA WRAP-AWARE:
+        //  El ciclo dayT va de 0 a 1 y hace wrap. Una diferencia naive
+        //  de 0.96 entre server=0.98 y local=0.02 parecería un desfase
+        //  grande, pero en realidad son solo 0.04 aparte (cruzando el 0/1).
+        //  La corrección: si diff > 0.5 entonces diff = 1.0 - diff.
+        //  Esto garantiza que siempre comparamos la distancia más corta
+        //  en el ciclo circular.
+        //
+        //  También se emite desde adminTimeUpdate (cambio manual de hora),
+        //  en cuyo caso la diferencia suele ser grande → siempre hace snap.
+        //
+        //  Guards:
+        //    • _environment !== null — no hay sesión multijugador activa.
+        //    • typeof data?.dayT === 'number' — payload malformado o servidor antiguo.
+        _socket.on('timeUpdate', (data) => {
+          if (!(_environment && typeof data?.dayT === 'number')) return;
+
+          const serverTime = data.dayT;
+          const localTime  = _environment.dayT;
+
+          // Diferencia wrap-aware en el ciclo [0, 1)
+          let diff = Math.abs(serverTime - localTime);
+          if (diff > 0.5) diff = 1.0 - diff;
+
+          if (diff > TIME_SNAP_THRESHOLD) {
+            // Desincronización significativa → snap al valor canónico del servidor
+            _environment.setDayT(serverTime);
+            console.info(
+              `[VibeCraft MP] timeUpdate snap: local=${localTime.toFixed(4)} ` +
+              `server=${serverTime.toFixed(4)} diff=${diff.toFixed(4)}`
+            );
+          }
+          // diff ≤ TIME_SNAP_THRESHOLD → el cliente ya está sincronizado,
+          // seguir avanzando localmente para máxima fluidez.
         });
 
         // ── Jugador desconectado ──────────────────────────────────────
@@ -567,6 +659,28 @@ export function sendPunchAction() {
 export function sendChatMessage(msg) {
   if (!_socket?.connected) return;
   _socket.emit('chatMessage', msg);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  📡  sendAdminTimeUpdate — propagar un cambio manual de hora
+//  ─────────────────────────────────────────────────────────────
+//  Llamado desde main.js cuando el jugador usa los Dev Tools o
+//  los atajos de teclado (U/I/O/P) mientras está en multijugador.
+//
+//  El servidor recibe el nuevo dayT, actualiza globalDayT y emite
+//  timeUpdate a TODOS los clientes para sincronización inmediata.
+//  Los demás clientes aplicarán snap (diferencia grande) o ignorarán
+//  (ya sincronizados) según su dead-band individual.
+//
+//  Guard: solo emite si el socket está conectado; en singleplayer
+//  esta función es un no-op silencioso.
+//
+//  @param {number} time — dayT actual del environment local [0, 1)
+// ═══════════════════════════════════════════════════════════════
+
+export function sendAdminTimeUpdate(time) {
+  if (!_socket?.connected) return;
+  _socket.emit('adminTimeUpdate', { dayT: time });
 }
 
 // ═══════════════════════════════════════════════════════════════
