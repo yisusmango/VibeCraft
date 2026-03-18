@@ -215,14 +215,23 @@ let _camera           = null;
 let _heldMesh         = null;
 let _currentHeldType  = null;
 
-const ARM_REST_POS = new THREE.Vector3(0.42, -0.32, -0.5);
-const ARM_REST_ROT = new THREE.Euler(-0.25, -0.3, 0.1);
+// ── HOTFIX v0.3.1 — Estética Minecraft: posición y rotación de reposo ──
+//  ARM_REST_POS: mano más alta (y: -0.25 vs -0.32) y más cercana (z: -0.45 vs -0.5).
+//  ARM_REST_ROT: rotación X más atrás (-0.3), giro Y más pronunciado (-0.4),
+//               leve inclinación Z (0.15) para una pose más natural.
+const ARM_REST_POS = new THREE.Vector3(0.42, -0.25, -0.45);
+const ARM_REST_ROT = new THREE.Euler(-0.3, -0.4, 0.15);
 
 const PUNCH_DURATION = 0.20;
 const PUNCH_ANGLE    = Math.PI / 3;
 let _punchTimer      = 0;
 let _isPunching      = false;
 
+// ── HOTFIX v0.3.1 — Visibilidad del bloque en mano ────────────────────
+//  Cambios respecto a la versión anterior:
+//    • position.z: 0.1 → -0.25  (Z negativa = delante de la cámara en Three.js)
+//    • renderOrder: 999 → 1000   (garantiza renderizado sobre el brazo)
+//    • frustumCulled: ya era false; se conserva explícitamente.
 function _updateFPHeldItem(type) {
   if (type === _currentHeldType) return;
 
@@ -237,10 +246,10 @@ function _updateFPHeldItem(type) {
   if (type && MATERIALS[type] && _fpArm) {
     const geo  = new THREE.BoxGeometry(0.25, 0.25, 0.25);
     const mesh = new THREE.Mesh(geo, MATERIALS[type]);
-    mesh.position.set(0, -0.55, 0.1);
+    mesh.position.set(0, -0.6, -0.25);   // HOTFIX: Z negativa → visible frente a la cámara
     mesh.scale.setScalar(1.2);
-    mesh.renderOrder = 999;
-    mesh.frustumCulled = false;
+    mesh.renderOrder = 1000;              // HOTFIX: por encima del brazo (era 999)
+    mesh.frustumCulled = false;           // HOTFIX: forzar visibilidad independientemente del frustum
     mesh.userData.sharedMaterial = true;
     _fpArm.add(mesh);
     _heldMesh = mesh;
@@ -416,10 +425,11 @@ export function updatePhysics(dt, camera, controls) {
   if (_fpArm) {
     if (_isPunching) {
       _punchTimer += dt;
-      const t = Math.min(_punchTimer / PUNCH_DURATION, 1);
-      const ease = Math.sin(t * Math.PI);
-      _fpArm.rotation.x = ARM_REST_ROT.x - PUNCH_ANGLE * ease;
-      _fpArm.position.z = ARM_REST_POS.z - 0.15 * ease;
+      const t          = Math.min(_punchTimer / PUNCH_DURATION, 1);
+      const punchAnim  = Math.sin(t * Math.PI);
+      // HOTFIX v0.3.1 — signo positivo: la animación se proyecta hacia adelante
+      _fpArm.rotation.x = ARM_REST_ROT.x + (punchAnim * PUNCH_ANGLE);
+      _fpArm.position.z = ARM_REST_POS.z - 0.15 * punchAnim;
 
       if (t >= 1) {
         _isPunching = false;
