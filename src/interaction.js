@@ -1,6 +1,13 @@
 // ═══════════════════════════════════════════════════════════════
 //  src/interaction.js  —  VibeCraft · Fase 2: Raycaster para InstancedMesh
 //
+//  CAMBIOS v0.3.2 (partículas):
+//  ─────────────────────────────────────────────────────────────
+//  • Import de MATERIALS desde world.js y spawnParticles desde particles.js
+//  • Variable de módulo _scene para acceder a la escena en destroyBlock
+//  • destroyBlock captura el material antes del remove y llama spawnParticles
+//  • initInteraction guarda la referencia a scene en _scene
+//
 //  CAMBIOS RESPECTO A LA FASE ANTERIOR:
 //  ─────────────────────────────────────────────────────────────
 //  ANTES  │  blockMap almacenaba THREE.Mesh → un hit siempre tenía
@@ -28,11 +35,15 @@
 
 import * as THREE from 'three';
 import { CONFIG, HALF_W }                                              from './config.js';
-import { addBlock, removeBlock, hasBlock, getBlockMeshes, getBlockType } from './world.js';
-import { player, triggerPunch }                                         from './player.js';
+import { addBlock, removeBlock, hasBlock, getBlockMeshes, getBlockType, MATERIALS } from './world.js';
+import { spawnParticles }                                              from './particles.js';
+import { player, triggerPunch }                                        from './player.js';
 import { getCurrentBlockType }                                         from './ui.js';
 import { sendBlockUpdate, sendPunchAction }                            from './multiplayer.js';
 import { playBreakSound, playPlaceSound }                              from './audio.js';
+
+// ── Referencia a escena (necesaria para spawnParticles) ─────────
+let _scene = null;
 
 // ═══════════════════════════════════════════════════════════════
 //  🎯  RAYCASTER
@@ -188,19 +199,30 @@ function wouldOverlapPlayer(bx, by, bz, blockType = 'grass') {
  *   1. Leemos el tipo ANTES de remover (removeBlock borra la entrada del blockMap).
  *   2. Reproducimos el sonido de rotura DESPUÉS de remover para que el
  *      feedback auditivo coincida con el visual (bloque desaparecido).
+ *
+ * PARTÍCULAS (v0.3.2):
+ *   3. Capturamos el material (MATERIALS[blockType]) antes del remove.
+ *   4. Llamamos spawnParticles después del remove con el material capturado.
+ *      Si el tipo no tiene material (water, edge case) se omite el spawn.
  */
 function destroyBlock() {
   if (!targetBlock) return;
   const { x, y, z } = targetBlock;
 
-  // Capturar el tipo antes de que removeBlock lo elimine del blockMap
+  // Capturar tipo Y material ANTES de que removeBlock los elimine del blockMap
   const blockType = getBlockType(x, y, z);
+  const mat       = blockType && MATERIALS[blockType] ? MATERIALS[blockType] : null;
 
   removeBlock(x, y, z);
   sendBlockUpdate('remove', x, y, z, null, null);  // notificar a otros
 
   // Reproducir sonido de rotura según el tipo de bloque eliminado
   playBreakSound(blockType);
+
+  // Lanzar partículas con el material del bloque roto
+  if (mat && _scene) {
+    spawnParticles(_scene, x, y, z, mat);
+  }
 
   targetBlock = null;
   highlightMesh.visible = false;
@@ -239,6 +261,9 @@ function placeBlock() {
 // ═══════════════════════════════════════════════════════════════
 
 export function initInteraction(scene, controls) {
+  // Guardar referencia a escena para spawnParticles en destroyBlock
+  _scene = scene;
+
   scene.add(highlightMesh);
 
   document.addEventListener('mousedown', (e) => {
