@@ -231,6 +231,24 @@ export class Environment {
     // Reloj interno: 0 → 1 en DAY_DURATION segundos
     this._dayT = 0.0;   // empieza en el amanecer
 
+    // ── Modo de reloj sincronizado ────────────────────────────────
+    //  isServerSynced = false (default, singleplayer / menú):
+    //    El reloj avanza localmente en update() cada frame.
+    //    setDayT() se ignora (no llega ningún timeUpdate).
+    //
+    //  isServerSynced = true (multijugador):
+    //    El reloj SIGUE avanzando localmente cada frame para garantizar
+    //    sombras y animaciones fluidas sin saltos de 10 s.
+    //    setDayT() se usa SOLO para correcciones por snap cuando la
+    //    desincronización acumulada supera el umbral de 0.05 (dead-band
+    //    gestionado en multiplayer.js → timeUpdate listener).
+    //    sendAdminTimeUpdate() propaga al servidor los cambios manuales
+    //    de hora (Dev Tools / atajos de teclado) para que todos los
+    //    clientes se sincronicen al nuevo valor inmediatamente.
+    //
+    //  Debe resetearse a false al volver al menú / singleplayer.
+    this.isServerSynced = false;
+
     // Colores interpolados actuales (reutilizados para evitar GC)
     this._curSky     = new THREE.Color();
     this._curFog     = new THREE.Color();
@@ -480,10 +498,27 @@ export class Environment {
   //  🔄  ACTUALIZACIÓN — llamar cada frame desde animate()
   //  @param {number} dt      — Delta time en segundos
   //  @param {THREE.Camera} camera — Para seguir la posición XZ del jugador
+  //
+  //  MODELO "RELOJ LOCAL SINCRONIZADO":
+  //    El reloj local (_dayT) avanza SIEMPRE frame a frame, sin importar
+  //    si isServerSynced es true o false. Esto garantiza que el sol se
+  //    mueva suavemente y las sombras nunca den saltos.
+  //
+  //    En modo multijugador (isServerSynced = true), el servidor actúa
+  //    como árbitro de correcciones: el listener timeUpdate en multiplayer.js
+  //    compara el valor del servidor con el local y solo hace snap
+  //    (setDayT) si la diferencia supera el dead-band de 0.05.
+  //    Para diferencias pequeñas, el cliente sigue avanzando solo → fluidez.
+  //
+  //    Cuando el jugador cambia la hora manualmente (Dev Tools / U/I/O/P),
+  //    sendAdminTimeUpdate() propaga el nuevo valor al servidor, que a su vez
+  //    emite timeUpdate a todos los demás para que sincronicen al nuevo tiempo.
   // ─────────────────────────────────────────────────────────────
 
   update(dt, camera) {
-    // 1. Avanzar reloj: dayT en [0, 1) — módulo garantiza continuidad
+    // 1. Avanzar reloj local — SIEMPRE, en ambos modos (singleplayer y multijugador).
+    //    En multijugador el servidor corrige vía setDayT() solo cuando la
+    //    desincronización supera el dead-band (0.05), garantizando fluidez total.
     this._dayT = (this._dayT + dt / DAY_DURATION) % 1.0;
 
     // 2. Interpolar colores e intensidades entre las 4 fases
@@ -513,23 +548,6 @@ export class Environment {
     this._sunMesh.lookAt(camPos);
     this._moonMesh.lookAt(camPos);
 
-    // 7. Mover capa de nubes con viento — wrap-around del mapa completo
-    //
-    //  NUEVA ESTRATEGIA (0 actualizaciones de matriz/frame):
-    //  Las matrices de todas las instancias se calcularon UNA SOLA VEZ en
-    //  _buildClouds() y jamás se tocan. En su lugar, movemos el mesh.position
-    //  del InstancedMesh completo cada frame:
-    //
-    //    windX  = acumulador de viento (crece indefinidamente)
-    //    wrapped = windX mod MAP_WORLD_SIZE  → [0, 2048)
-    //    mesh.position.x = camPos.x + wrapped
-    //    mesh.position.z = camPos.z
-    //
-    //  Al ciclar MAP_WORLD_SIZE unidades, el mesh salta exactamente 1 mapa
-    //  de ancho. Como el patrón de nubes es periódico (viene de un PNG que
-    //  tilea), el salto no produce ninguna discontinuidad visual. ✓
-    //
-    //  Velocidad: 0.264 u/s (idéntica a las versiones anteriores).
     // 7. Mover capa de nubes con viento — grid snapping infinito
     //
     //  NUEVA ESTRATEGIA (0 actualizaciones de matriz/frame):
@@ -554,6 +572,7 @@ export class Environment {
     }
 
     // 8. Actualizar Luz Direccional (Sombras Dinámicas y seguimiento del jugador)
+    //
     //    El astro dominante es el que esté más alto en el cielo (Y mayor).
     //    La luz se coloca 100 u del jugador en esa dirección y apunta hacia él,
     //    garantizando que las sombras siempre rodeen al jugador sin importar
@@ -687,6 +706,26 @@ export class Environment {
       (phaseB.ambientIntensity - phaseA.ambientIntensity) * alpha;
     this._sun.intensity = phaseA.sunIntensity +
       (phaseB.sunIntensity - phaseA.sunIntensity) * alpha;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  📡  setDayT(t) — corrección externa del reloj (servidor)
+  //  ─────────────────────────────────────────────────────────────
+  //  Hace snap de _dayT al valor canónico recibido del servidor.
+  //  Solo se llama desde multiplayer.js cuando la diferencia
+  //  wrap-aware entre el valor del servidor y el local supera el
+  //  dead-band de 0.05 (≈ 1 min de ciclo). Para diferencias menores
+  //  el cliente sigue avanzando localmente y no se produce ningún salto.
+  //
+  //  El valor se valida y normaliza a [0, 1) para protegerse contra
+  //  payloads malformados o valores fuera de rango.
+  //
+  //  @param {number} t — dayT canónico del servidor [0, 1)
+  // ─────────────────────────────────────────────────────────────
+  setDayT(t) {
+    if (typeof t !== 'number' || !isFinite(t)) return;
+    // Normalizar al rango [0, 1) con módulo por si el servidor enviara > 1
+    this._dayT = ((t % 1.0) + 1.0) % 1.0;
   }
 
   // ─────────────────────────────────────────────────────────────
