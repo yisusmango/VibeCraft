@@ -683,9 +683,10 @@ export function updateOtherPlayers() {
     // Punch override en armR: si punchTimer ≥ 0, animar golpe rápido
     if (entry.punchTimer >= 0) {
       entry.punchTimer += 0.016;
-      const t    = Math.min(entry.punchTimer / REMOTE_PUNCH_DURATION, 1);
-      const ease = Math.sin(t * Math.PI);
-      parts.armR.rotation.x = -REMOTE_PUNCH_ANGLE * ease;
+      const t          = Math.min(entry.punchTimer / REMOTE_PUNCH_DURATION, 1);
+      const punchAnim  = Math.sin(t * Math.PI);
+      // HOTFIX v0.3.1 — signo corregido: suma swing + ángulo de punch hacia adelante
+      parts.armR.rotation.x = -swing + (punchAnim * REMOTE_PUNCH_ANGLE);
       if (t >= 1) entry.punchTimer = -1;
     } else {
       parts.armR.rotation.x = swing;
