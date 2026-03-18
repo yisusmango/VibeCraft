@@ -10,6 +10,10 @@
 //    6. Ejecutar el bucle de animación principal (requestAnimationFrame)
 //
 //  NO contiene lógica de juego. Cada sistema vive en su módulo.
+//
+//  CAMBIOS v0.3.2:
+//    • Import de updateParticles desde particles.js
+//    • Llamada a updateParticles(dt, scene) en el bucle animate()
 // ═══════════════════════════════════════════════════════════════
 
 import * as THREE from 'three';
@@ -29,6 +33,7 @@ import { initMultiplayer, sendUpdate,
          updateOtherPlayers,
          sendAdminTimeUpdate }              from './multiplayer.js';
 import { initAudio, resumeAudio }           from './audio.js';
+import { updateParticles }                  from './particles.js';
 
 // ═══════════════════════════════════════════════════════════════
 //  🖥️  RENDERER
@@ -621,9 +626,16 @@ function animate() {
       updateRaycaster(camera, controls);
       sendUpdate(player.position, camera);  // multiplayer: enviar estado local
     }
+
     updateOtherPlayers();  // multiplayer: interpolar posiciones remotas
     updateHUD(player, blockMap, getTargetBlock());
     checkLeafDecay();
+
+    // ── v0.3.2: tick de partículas ───────────────────────────────
+    //  Se llama FUERA de controls.isLocked: las partículas en vuelo
+    //  siguen simulándose aunque el jugador abra el menú de pausa
+    //  (cursor desbloqueado). La gravedad y el lifespan continúan.
+    updateParticles(dt, scene);
 
     waterTimer += dt;
     if (waterTimer >= 0.2) {
