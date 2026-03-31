@@ -100,9 +100,30 @@ export function updateRaycaster(camera, controls) {
   raycaster.setFromCamera(NDC_CENTER, camera);
   const hits = raycaster.intersectObjects(getBlockMeshes());
 
+  // ── Derivar coordenadas de bloque desde punto de impacto ──────────
+  //  Los chunk meshes son THREE.Mesh con BufferGeometry (fase 5).
+  //  No tienen instanceId; las coordenadas se calculan como:
+  //    bCoord = round(hit.point[axis] - hit.face.normal[axis] × 0.5)
+  //  Desplazar el punto de impacto 0.5 unidades hacia el interior
+  //  del bloque a lo largo de la normal y redondear al entero más
+  //  cercano da exactamente la coordenada del bloque golpeado.
+  function _hitToBlockCoords(h) {
+    const nx = h.face.normal.x, ny = h.face.normal.y, nz = h.face.normal.z;
+    return {
+      x: Math.round(h.point.x - nx * 0.5),
+      y: Math.round(h.point.y - ny * 0.5),
+      z: Math.round(h.point.z - nz * 0.5),
+    };
+  }
+
   let validHit = null;
   for (const h of hits) {
-    if (h.instanceId !== undefined && h.object.userData.instances) {
+    if (h.object.userData.isChunkMesh) {
+      // Chunk mesh (fase 5): derivar tipo desde blockMap
+      const { x, y, z } = _hitToBlockCoords(h);
+      if (getBlockType(x, y, z) === 'water') continue;
+    } else if (h.instanceId !== undefined && h.object.userData.instances) {
+      // Compatibilidad InstancedMesh (torches ya no usan esto, pero por seguridad)
       const inst = h.object.userData.instances[h.instanceId];
       if (inst && inst.type === 'water') continue;
     }
@@ -118,30 +139,17 @@ export function updateRaycaster(camera, controls) {
 
   const hit = validHit;
 
-  // ── ¿Hit sobre un InstancedMesh? ─────────────────────────────────
-  //  hit.instanceId es un número ≥ 0 cuando el objeto golpeado es un
-  //  InstancedMesh. Para Mesh individuales (antorchas) es undefined.
-  if (hit.instanceId !== undefined && hit.object.userData.instances) {
+  // ── ¿Hit sobre un chunk mesh (BufferGeometry)? ───────────────────
+  if (hit.object.userData.isChunkMesh) {
 
-    const inst = hit.object.userData.instances[hit.instanceId];
+    const { x: bx, y: by, z: bz } = _hitToBlockCoords(hit);
 
-    // inst puede ser undefined si el rebuild está en progreso y el
-    // instanceId aún no fue rellenado. Protección defensiva:
-    if (!inst) {
-      targetBlock = targetFaceNormal = null;
-      highlightMesh.visible = false;
-      return;
-    }
-
-    targetBlock      = { x: inst.x, y: inst.y, z: inst.z };
+    targetBlock      = { x: bx, y: by, z: bz };
     targetFaceNormal = hit.face.normal.clone();
-    // face.normal en espacio local del InstancedMesh.
-    // Nuestros InstancedMeshes no tienen rotación (solo setPosition),
-    // así que local == world y no necesitamos transformar el vector.
 
     // Highlight: posición exacta en grid, sin rotación, escala 1.03
-    highlightMesh.position.set(inst.x, inst.y, inst.z);
-    highlightMesh.quaternion.set(0, 0, 0, 1);  // identidad
+    highlightMesh.position.set(bx, by, bz);
+    highlightMesh.quaternion.set(0, 0, 0, 1);
     highlightMesh.scale.set(1.03, 1.03, 1.03);
     highlightMesh.visible = true;
 

@@ -38,7 +38,7 @@
 
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
-import { createNoise2D } from 'https://unpkg.com/simplex-noise@4.0.1/dist/esm/simplex-noise.js';
+import { createNoise2D, createNoise3D } from 'https://unpkg.com/simplex-noise@4.0.1/dist/esm/simplex-noise.js';
 
 let _scene = null;
 export function initWorld(scene) { _scene = scene; }
@@ -222,10 +222,9 @@ const _scaleV = new THREE.Vector3();
 const _posV   = new THREE.Vector3();
 const _quatI  = new THREE.Quaternion();
 
-// Altura máxima de escaneo para buildChunkMesh.
-// La generación de terreno alcanza maxY ≤ 27; 64 da margen para
-// construcciones del jugador sin ser prohibitivo (16×16×64 = 16.384
-// posiciones por chunk, la mayoría vacías → Map.get miss muy rápido).
+// Rango vertical escaneado para buildChunkMesh.
+// El mundo ahora soporta subsuelo profundo: y ∈ [-64, 64].
+const Y_SCAN_MIN = -64;
 const Y_SCAN_MAX = 64;
 
 const blockKey = (x, y, z) => `${x},${y},${z}`;
@@ -251,7 +250,9 @@ export function getBlockType(x, y, z) {
 // ═══════════════════════════════════════════════════════════════
 
 let _noise2D           = createNoise2D();
+let _noise3D           = createNoise3D();
 const _generatedChunks = new Set();
+const _chunkMinYGenerated = new Map();
 let _lastChunkX        = null;
 let _lastChunkZ        = null;
 
@@ -280,12 +281,14 @@ export function setNoiseSeed(seed) {
     return s / 0x100000000;
   };
   _noise2D = createNoise2D(prng);
+  _noise3D = createNoise3D(prng);
 }
 
 export function resetChunks() {
   // Descargar y liberar todas las mallas visuales
   for (const [key, entry] of _chunkMeshes) _unloadChunkVisuals(key, entry);
   _generatedChunks.clear();
+  _chunkMinYGenerated.clear();
   _lastChunkX = null;
   _lastChunkZ = null;
 }
@@ -303,13 +306,36 @@ const NEIGHBOR_OFFSETS = [
   [ 0, 0, 1], [ 0, 0,-1],
 ];
 
-function isBlockOccluded(x, y, z) {
-  for (const [dx, dy, dz] of NEIGHBOR_OFFSETS) {
-    const n = blockMap.get(blockKey(x + dx, y + dy, z + dz));
-    if (!n || TRANSPARENT_TYPES.has(n.type)) return false;
-  }
-  return true;
-}
+// ═══════════════════════════════════════════════════════════════
+//  FACE_DEFS — Definiciones de las 6 caras de un voxel
+//  ─────────────────────────────────────────────────────────────
+//  Basado en el manual oficial de Three.js (voxel geometry).
+//  • corners: 4 offsets de vértice desde el centro del bloque.
+//    Los valores son ±0.5; la posición final es (bx+cx, by+cy, bz+cz).
+//  • Orden de índices por quad: v0,v1,v2 y v2,v1,v3 (CCW front-face).
+//  • slot: índice en el array MATERIALS[type]
+//    (importa para grass, donde top/bottom/sides tienen texturas distintas).
+// ═══════════════════════════════════════════════════════════════
+const FACE_DEFS = [
+  { dir:[-1, 0, 0], slot:1, // izquierda −X
+    corners:[[-0.5, 0.5,-0.5],[-0.5,-0.5,-0.5],[-0.5, 0.5, 0.5],[-0.5,-0.5, 0.5]],
+    uvs:[[0,1],[0,0],[1,1],[1,0]] },
+  { dir:[ 1, 0, 0], slot:0, // derecha +X
+    corners:[[ 0.5, 0.5, 0.5],[ 0.5,-0.5, 0.5],[ 0.5, 0.5,-0.5],[ 0.5,-0.5,-0.5]],
+    uvs:[[0,1],[0,0],[1,1],[1,0]] },
+  { dir:[ 0,-1, 0], slot:3, // fondo −Y
+    corners:[[ 0.5,-0.5, 0.5],[-0.5,-0.5, 0.5],[ 0.5,-0.5,-0.5],[-0.5,-0.5,-0.5]],
+    uvs:[[1,0],[0,0],[1,1],[0,1]] },
+  { dir:[ 0, 1, 0], slot:2, // techo +Y
+    corners:[[-0.5, 0.5, 0.5],[ 0.5, 0.5, 0.5],[-0.5, 0.5,-0.5],[ 0.5, 0.5,-0.5]],
+    uvs:[[1,0],[0,0],[1,1],[0,1]] },
+  { dir:[ 0, 0,-1], slot:5, // trasera −Z
+    corners:[[ 0.5,-0.5,-0.5],[-0.5,-0.5,-0.5],[ 0.5, 0.5,-0.5],[-0.5, 0.5,-0.5]],
+    uvs:[[0,0],[1,0],[0,1],[1,1]] },
+  { dir:[ 0, 0, 1], slot:4, // frontal +Z
+    corners:[[-0.5,-0.5, 0.5],[ 0.5,-0.5, 0.5],[-0.5, 0.5, 0.5],[ 0.5, 0.5, 0.5]],
+    uvs:[[0,0],[1,0],[0,1],[1,1]] },
+];
 
 // ═══════════════════════════════════════════════════════════════
 //  _unloadChunkVisuals — INTERNO
@@ -322,9 +348,10 @@ function isBlockOccluded(x, y, z) {
 // ═══════════════════════════════════════════════════════════════
 
 function _unloadChunkVisuals(key, entry) {
-  for (const im of entry.ims) {
-    im.removeFromParent();
-    im.dispose();
+  for (const m of entry.ims) {
+    m.removeFromParent();
+    m.geometry.dispose();   // BufferGeometry único por chunk → liberar GPU
+    // Los materiales son compartidos globalmente → NO se disponen aquí
   }
   for (const tm of entry.torches) {
     tm.visible = false;
@@ -334,24 +361,23 @@ function _unloadChunkVisuals(key, entry) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  buildChunkMesh — NÚCLEO DE LA FASE 4
+//  buildChunkMesh — FASE 5: Per-Face BufferGeometry Culling
 //  ─────────────────────────────────────────────────────────────
-//  Construye (o reconstruye) los InstancedMeshes de UN chunk.
+//  Para cada bloque del chunk comprueba individualmente las 6 caras.
+//  Solo se genera la geometría de las caras EXPUESTAS (vecino = aire
+//  o bloque transparente de distinto tipo). Las caras enterradas entre
+//  bloques sólidos se descartan → reducción drástica de triángulos.
 //
-//  COMPLEJIDAD: O(CS × CS × Y_SCAN_MAX)
-//    = O(16 × 16 × 64) = O(16.384) por chunk.
-//    Cada iteración es un Map.get → O(1) hash lookup.
-//    Comparado con el O(blockMap.size) global previo:
-//    con 169 chunks cargados × ~700 bloques = ~118.000 → 7× más rápido.
+//  SALIDA: Un THREE.Mesh con BufferGeometry por tipo de material
+//    activo en el chunk. Grass usa multi-material (grupos por cara)
+//    para aplicar texturas distintas en techo/suelo/laterales.
 //
-//  ALGORITMO:
-//    1. Descartar InstancedMeshes anteriores de este chunk (si existen).
-//    2. Pasar 1 (conteo): iterar coordenadas del chunk, contar bloques
-//       visibles por tipo (excluyendo occluded).
-//    3. Crear un InstancedMesh por tipo con el count exacto.
-//    4. Pasar 2 (fill): mismo recorrido → setMatrixAt + userData.instances.
-//    5. Recoger referencias a torch meshes para la gestión de visibilidad.
-//    6. Guardar { ims, torches } en _chunkMeshes.
+//  RAYCASTING: Los meshes llevan userData.isChunkMesh=true.
+//    interaction.js deriva las coordenadas del bloque a partir de
+//    hit.point y hit.face.normal (no se necesita instanceId).
+//
+//  VECINOS ENTRE CHUNKS: blockMap es global → los bloques en el
+//    borde del chunk comprueban correctamente al chunk adyacente.
 // ═══════════════════════════════════════════════════════════════
 
 export function buildChunkMesh(cx, cz) {
@@ -365,24 +391,32 @@ export function buildChunkMesh(cx, cz) {
   const zEnd   = zStart + CS;
 
   // ── 1. Limpiar mallas anteriores de este chunk ───────────────────
-  //  Solo los InstancedMeshes se destruyen; las torch meshes se
-  //  dejan en escena (se actualizarán su visibilidad más abajo).
   if (_chunkMeshes.has(key)) {
     const old = _chunkMeshes.get(key);
-    for (const im of old.ims) {
-      im.removeFromParent();
-      im.dispose();
+    for (const m of old.ims) {
+      m.removeFromParent();
+      m.geometry.dispose();   // BufferGeometry único por chunk → liberar GPU
     }
     _chunkMeshes.delete(key);
   }
 
-  // ── 2. Pasar 1: contar instancias visibles por tipo ──────────────
-  const counts  = Object.fromEntries(INSTANCED_TYPES.map(t => [t, 0]));
+  // ── 2. Inicializar buffers de caras por tipo ─────────────────────
+  // 'grass': 6 buffers (uno por slot de material, para top/bottom/sides).
+  // Otros tipos: 1 buffer (todos los faces comparten el mismo material).
+  const makeBuf = () => ({ pos: [], nrm: [], uv: [], vcnt: 0 });
+  const faceData = {};
+  for (const type of INSTANCED_TYPES) {
+    faceData[type] = (type === 'grass')
+      ? Array.from({ length: 6 }, makeBuf)
+      : [makeBuf()];
+  }
+
+  // ── 3. Recorrer bloques del chunk y recoger caras expuestas ──────
   const torches = [];
 
   for (let x = xStart; x < xEnd; x++) {
     for (let z = zStart; z < zEnd; z++) {
-      for (let y = 0; y <= Y_SCAN_MAX; y++) {
+      for (let y = Y_SCAN_MIN; y <= Y_SCAN_MAX; y++) {
         const data = blockMap.get(blockKey(x, y, z));
         if (!data) continue;
 
@@ -396,62 +430,106 @@ export function buildChunkMesh(cx, cz) {
         }
 
         if (!INSTANCED_TYPES.includes(data.type)) continue;
-        if (isBlockOccluded(x, y, z)) continue;
-        counts[data.type]++;
+        const type = data.type;
+
+        // Ajuste de altura para agua (waterLevel escala el tope del bloque)
+        const isWater = (type === 'water');
+        const yTop    = isWater ? y - 0.5 + (data.waterLevel / 8) * 0.9 : y + 0.5;
+
+        for (const fd of FACE_DEFS) {
+          // ── Regla de Oro: comprobar vecino en la dirección de la cara ─
+          // El vecino se busca en blockMap global → vecinos de chunks
+          // adyacentes se comprueban automáticamente sin lógica extra.
+          const neighb = blockMap.get(
+            blockKey(x + fd.dir[0], y + fd.dir[1], z + fd.dir[2])
+          );
+          // Cara OCULTA si el vecino es sólido, o es el mismo tipo transparente
+          if (neighb && (!TRANSPARENT_TYPES.has(neighb.type) || neighb.type === type)) continue;
+
+          // ── Seleccionar buffer de destino ────────────────────────
+          const buf = (type === 'grass') ? faceData.grass[fd.slot] : faceData[type][0];
+
+          // ── Añadir los 4 vértices del quad ───────────────────────
+          const [dnx, dny, dnz] = fd.dir;
+          for (let vi = 0; vi < 4; vi++) {
+            const [cx_off, cy_off, cz_off] = fd.corners[vi];
+            // Posición en espacio mundo; agua ajusta el vértice superior
+            const vx = x + cx_off;
+            const vy = isWater ? (cy_off > 0 ? yTop : y - 0.5) : (y + cy_off);
+            const vz = z + cz_off;
+            buf.pos.push(vx, vy, vz);
+            buf.nrm.push(dnx, dny, dnz);
+            buf.uv.push(fd.uvs[vi][0], fd.uvs[vi][1]);
+          }
+          buf.vcnt += 4;
+        }
       }
     }
   }
 
-  // ── 3. Crear InstancedMeshes con capacidad exacta ─────────────────
-  const ims         = [];
-  const meshByType  = {};
-  const indexByType = {};
+  // ── 4. Construir BufferGeometry y Mesh por tipo ──────────────────
+  const meshes = [];
 
   for (const type of INSTANCED_TYPES) {
-    if (counts[type] === 0) continue;
-    const im = new THREE.InstancedMesh(BLOCK_GEO, MATERIALS[type], counts[type]);
-    im.castShadow    = true;
-    im.receiveShadow = true;
-    im.userData.instances = new Array(counts[type]);
-    meshByType[type]  = im;
-    indexByType[type] = 0;
-    _scene.add(im);
-    ims.push(im);
-  }
+    const slots      = faceData[type];
+    const totalVerts = slots.reduce((s, b) => s + b.vcnt, 0);
+    if (totalVerts === 0) continue;
 
-  // ── 4. Pasar 2: rellenar matrices e índices de instancia ──────────
-  for (let x = xStart; x < xEnd; x++) {
-    for (let z = zStart; z < zEnd; z++) {
-      for (let y = 0; y <= Y_SCAN_MAX; y++) {
-        const data = blockMap.get(blockKey(x, y, z));
-        if (!data || data.mesh) continue;
-        if (!INSTANCED_TYPES.includes(data.type)) continue;
-        if (isBlockOccluded(x, y, z)) continue;
+    const numQuads = totalVerts / 4;
+    const posArr   = new Float32Array(totalVerts * 3);
+    const nrmArr   = new Float32Array(totalVerts * 3);
+    const uvArr    = new Float32Array(totalVerts * 2);
+    const idxArr   = new Uint32Array(numQuads * 6);  // 6 índices por quad
 
-        const im  = meshByType[data.type];
-        const idx = indexByType[data.type]++;
+    const geo = new THREE.BufferGeometry();
 
-        if (data.type === 'water') {
-          const h = (data.waterLevel / 8) * 0.9;
-          _scaleV.set(1, h, 1);
-          _posV.set(x, y - 0.5 + h / 2, z);
-          _matrix.compose(_posV, _quatI, _scaleV);
-        } else {
-          _matrix.identity();
-          _matrix.setPosition(x, y, z);
-        }
+    let posOff = 0, nrmOff = 0, uvOff = 0, idxOff = 0, vertBase = 0;
 
-        im.setMatrixAt(idx, _matrix);
-        im.userData.instances[idx] = { x, y, z, type: data.type };
+    for (let s = 0; s < slots.length; s++) {
+      const buf = slots[s];
+      if (buf.vcnt === 0) continue;
+
+      // Copiar atributos a los arrays tipados
+      for (let i = 0; i < buf.pos.length; i++) posArr[posOff++] = buf.pos[i];
+      for (let i = 0; i < buf.nrm.length; i++) nrmArr[nrmOff++] = buf.nrm[i];
+      for (let i = 0; i < buf.uv.length;  i++) uvArr[uvOff++]   = buf.uv[i];
+
+      // Índices de triángulo: (v0,v1,v2) y (v2,v1,v3) por quad
+      const groupIdxStart = idxOff;
+      const numQ = buf.vcnt / 4;
+      for (let q = 0; q < numQ; q++) {
+        const b = vertBase + q * 4;
+        idxArr[idxOff++] = b;     idxArr[idxOff++] = b + 1; idxArr[idxOff++] = b + 2;
+        idxArr[idxOff++] = b + 2; idxArr[idxOff++] = b + 1; idxArr[idxOff++] = b + 3;
+      }
+      vertBase += buf.vcnt;
+
+      // Grupos de material (solo necesarios para grass multi-material)
+      if (type === 'grass') {
+        const groupCount = idxOff - groupIdxStart;
+        if (groupCount > 0) geo.addGroup(groupIdxStart, groupCount, s);
       }
     }
+
+    geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+    geo.setAttribute('normal',   new THREE.BufferAttribute(nrmArr, 3));
+    geo.setAttribute('uv',       new THREE.BufferAttribute(uvArr,  2));
+    geo.setIndex(new THREE.BufferAttribute(idxArr, 1));
+    geo.computeBoundingSphere();
+
+    // Grass: array de 6 materiales (grupos indexan en él).
+    // Resto: material único (slot 0 del array de materiales compartidos).
+    const mat  = (type === 'grass') ? MATERIALS.grass : MATERIALS[type][0];
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow    = true;
+    mesh.receiveShadow = true;
+    mesh.userData.isChunkMesh = true;  // marca para interaction.js
+    _scene.add(mesh);
+    meshes.push(mesh);
   }
 
-  // ── 5. Confirmar matrices en GPU ──────────────────────────────────
-  for (const im of ims) im.instanceMatrix.needsUpdate = true;
-
-  // ── 6. Registrar la entrada en el mapa de mallas ──────────────────
-  _chunkMeshes.set(key, { ims, torches });
+  // ── 5. Registrar la entrada en el mapa de mallas ──────────────────
+  _chunkMeshes.set(key, { ims: meshes, torches });
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -613,7 +691,7 @@ export function removeBlock(x, y, z, { rebuild = true } = {}) {
 //    Coste por frame: O(16×16×64) ≈ O(16.384). Sin stutter.
 // ═══════════════════════════════════════════════════════════════
 
-export function updateChunks(playerX, playerZ) {
+export function updateChunks(playerX, playerZ, playerY = 0) {
   const CS = CONFIG.CHUNK_SIZE;
   const RD = CONFIG.RENDER_DISTANCE;
 
@@ -649,11 +727,19 @@ export function updateChunks(playerX, playerZ) {
 
   // ── Etapa 3: procesar 1 chunk (el más cercano) este frame ────────
   const item = pending[0];
+  const targetMinY = _resolveGenerationMinY(playerY);
 
   if (!_generatedChunks.has(item.key)) {
     // Terreno no generado aún → generarlo en blockMap
-    _generateChunk(item.cx, item.cz);
+    _generateChunk(item.cx, item.cz, targetMinY);
     _generatedChunks.add(item.key);
+    _chunkMinYGenerated.set(item.key, targetMinY);
+  } else {
+    const currentMinY = _chunkMinYGenerated.get(item.key) ?? -63;
+    if (targetMinY < currentMinY) {
+      _deepenChunk(item.cx, item.cz, currentMinY, targetMinY);
+      _chunkMinYGenerated.set(item.key, targetMinY);
+    }
   }
 
   // Construir (o reconstruir) solo la malla de este chunk
@@ -722,15 +808,161 @@ function _generateTree(startX, startY, startZ) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  CAVE GENERATION — 3D Multi-Fractal Noise
+//  ─────────────────────────────────────────────────────────────
+//  Minecraft-style "spaghetti" caves: a block is AIR when the
+//  absolute value of 3D noise falls in a narrow band around 0.
+//  |density| < threshold  →  tunnel void.
+//
+//  Width variation: a second low-frequency noise layer modulates
+//  the threshold, producing wider "rooms" in some areas and
+//  narrower squeeze-throughs in others.
+//
+//  Surface entrances: ~5% of (x,z) columns (deterministic via
+//  _noise2D) allow caves to reach the terrain surface; the rest
+//  stop CAVE_SURFACE_MARGIN blocks below to stay hidden.
+// ═══════════════════════════════════════════════════════════════
+
+const CAVE_THRESHOLD_BASE  = 0.15;  // base air band: [-0.15, +0.15]
+const CAVE_THRESHOLD_EXTRA = 0.08;  // additional widening from modulation/chambers
+const CAVE_SURFACE_MARGIN  = 3;     // blocks below surface (normal columns)
+const CAVE_ENTRANCE_CHANCE = 0.05;  // 5% of columns allow surface breach
+const CAVE_MIN_Y           = -60;   // rango principal de cuevas profundas
+const CAVE_DEFAULT_MAX_Y   = 5;     // tope normal del tallado
+
+/**
+ * 3D multi-fractal cave density.
+ * Two octaves of 3D simplex noise blended 70/30.
+ * Returns a value roughly in [-1, 1]; tunnel exists when |v| ≈ 0.
+ */
+function _caveDensity(x, y, z) {
+  // Frecuencia baja para túneles anchos y formas grandes.
+  const n1 = _noise3D(x * 0.010, y * 0.010, z * 0.010);
+  const n2 = _noise3D(x * 0.020, y * 0.020, z * 0.020);
+  return n1 * 0.65 + n2 * 0.35;
+}
+
+/**
+ * Width-modulation noise — low frequency, coordinate offset +500
+ * to decorrelate from the primary tunnel sampling.
+ * Positive values widen the cave threshold ("rooms").
+ */
+function _caveWidthMod(x, y, z) {
+  return _noise3D((x + 500) * 0.010, (y + 500) * 0.010, (z + 500) * 0.010);
+}
+
+// Capa ultra-baja frecuencia para "salas" gigantes conectadas.
+function _caveChamberNoise(x, y, z) {
+  return _noise3D((x + 1300) * 0.005, (y + 1300) * 0.005, (z + 1300) * 0.005);
+}
+
+function _getSurfaceHeight(x, z) {
+  const n1 = _noise2D(x * 0.010, z * 0.010);
+  const n2 = _noise2D(x * 0.033, z * 0.033);
+  const n3 = _noise2D(x * 0.100, z * 0.100);
+
+  let elevation = (n1 * 0.60) + (n2 * 0.30) + (n3 * 0.10);
+  if (elevation > 0) elevation = Math.pow(elevation, 1.4);
+
+  return Math.max(-63, Math.min(64, Math.round(elevation * 22)));
+}
+
+function _resolveGenerationMinY(playerY = 0) {
+  // Subsuelo sólido obligatorio: siempre generar hasta -63 antes del tallado.
+  return -63;
+}
+
+// Sobrescritura directa para generación de terreno (sin rebuild inmediato).
+// Se usa para capas top-down (grass/dirt sobre stone) porque addBlock no
+// reemplaza bloques sólidos existentes.
+function _setGeneratedBlock(x, y, z, type) {
+  blockMap.set(blockKey(x, y, z), {
+    x, y, z,
+    type,
+    normal: null,
+    isSolid: !TRANSPARENT_TYPES.has(type),
+    waterLevel: type === 'water' ? 8 : 0,
+    isSource: type === 'water' ? true : undefined,
+  });
+}
+
+/**
+ * Carves caves through already-placed terrain blocks in blockMap.
+ * Only examines stone and dirt (optimisation) and never touches y=-64
+ * (bedrock). Removes floating grass when a cave perforates directly
+ * beneath the surface layer.
+ *
+ * @param {number}     xStart   — chunk start X
+ * @param {number}     xEnd     — chunk end X (exclusive)
+ * @param {number}     zStart   — chunk start Z
+ * @param {number}     zEnd     — chunk end Z (exclusive)
+ * @param {number}     CS       — chunk size
+ * @param {Uint8Array} surfaceY — surface height per column [CS×CS]
+ */
+function _carveCaves(xStart, xEnd, zStart, zEnd, CS, surfaceY, minYOverride = null, maxYOverride = null) {
+  for (let x = xStart; x < xEnd; x++) {
+    for (let z = zStart; z < zEnd; z++) {
+      const maxY = surfaceY[(x - xStart) * CS + (z - zStart)];
+      if (maxY < CAVE_MIN_Y) continue;
+
+      // Deterministic per-column: ~5% allow surface entrance
+      const entranceVal  = (_noise2D(x * 7.3, z * 7.3) + 1) * 0.5;
+      const allowSurface = entranceVal < CAVE_ENTRANCE_CHANCE;
+
+      const caveFloorBase = Math.max(-63, CAVE_MIN_Y);
+      const caveFloor = minYOverride === null
+        ? caveFloorBase
+        : Math.max(caveFloorBase, minYOverride);
+
+      let caveCeiling = allowSurface
+        ? maxY
+        : Math.min(CAVE_DEFAULT_MAX_Y, Math.max(caveFloor, maxY - CAVE_SURFACE_MARGIN));
+
+      if (maxYOverride !== null) caveCeiling = Math.min(caveCeiling, maxYOverride);
+      if (caveFloor > caveCeiling) continue;
+
+      for (let y = caveFloor; y <= caveCeiling; y++) { // y=-64 es bedrock: nunca tallar
+        const key = blockKey(x, y, z);
+        const data = blockMap.get(key);
+        if (!data) continue;
+        if (data.type !== 'stone' && data.type !== 'dirt') continue;
+
+        const density   = _caveDensity(x, y, z);
+        const widthMod  = _caveWidthMod(x, y, z);
+        const chamberN  = _caveChamberNoise(x, y, z);
+        const threshold = CAVE_THRESHOLD_BASE
+                        + Math.max(0, widthMod) * (CAVE_THRESHOLD_EXTRA * 0.45)
+                        + Math.max(0, chamberN) * (CAVE_THRESHOLD_EXTRA * 1.25);
+
+        if (Math.abs(density) < threshold) {
+          blockMap.delete(key);
+
+          // Prevent floating grass above the carved block
+          const aboveKey  = blockKey(x, y + 1, z);
+          const aboveData = blockMap.get(aboveKey);
+          if (aboveData && aboveData.type === 'grass') {
+            blockMap.delete(aboveKey);
+          }
+        }
+      }
+    }
+  }
+}
+
 // ── _generateChunk (interno) ──────────────────────────────────────
 //  Rellena blockMap con el terreno de un chunk usando Fractal
-//  Brownian Motion de 3 octavas. Usa { rebuild: false } en todos
-//  los addBlock → la malla la construye updateChunks() después.
+//  Brownian Motion de 3 octavas, luego talla cuevas con ruido 3D.
+//  Usa { rebuild: false } en todos los addBlock → la malla la
+//  construye updateChunks() después.
 
-function _generateChunk(cx, cz) {
+function _generateChunk(cx, cz, minY = -63) {
   const CS     = CONFIG.CHUNK_SIZE;
   const xStart = cx * CS, xEnd = xStart + CS;
   const zStart = cz * CS, zEnd = zStart + CS;
+
+  // Almacén de alturas de superficie para la pasada de cuevas (admite Y negativo)
+  const surfaceY = new Int16Array(CS * CS);
 
   for (let x = xStart; x < xEnd; x++) {
     for (let z = zStart; z < zEnd; z++) {
@@ -743,36 +975,61 @@ function _generateChunk(cx, cz) {
       //  ESCALAS:  0.01  →  formas masivas (continentes, valles)
       //            0.033 →  colinas de escala media
       //            0.10  →  detalles finos de superficie
-      const n1 = _noise2D(x * 0.010, z * 0.010);
-      const n2 = _noise2D(x * 0.033, z * 0.033);
-      const n3 = _noise2D(x * 0.100, z * 0.100);
+      const maxY = _getSurfaceHeight(x, z);
+      surfaceY[(x - xStart) * CS + (z - zStart)] = maxY;
 
-      let elevation = (n1 * 0.60) + (n2 * 0.30) + (n3 * 0.10);
+      // Bedrock fijo en el fondo del mundo
+      _setGeneratedBlock(x, -64, z, 'stone');
 
-      // Exponenciación: aplana valles y agudiza picos de montaña
-      if (elevation > 0) elevation = Math.pow(elevation, 1.4);
+      // Relleno sólido desde y=-63 hasta la superficie (base de subsuelo profundo)
+      for (let y = minY; y <= maxY; y++) {
+        _setGeneratedBlock(x, y, z, 'stone');
+      }
 
-      const maxY = Math.max(0, Math.round(elevation * 22) + 5);
-
-      for (let y = 0; y <= maxY; y++) {
-        let type;
-        if      (y === maxY)    type = 'grass';
-        else if (y >= maxY - 2) type = 'dirt';
-        else                    type = 'stone';
-        addBlock(x, y, z, type, null, { rebuild: false });
+      // Acabado superficial: capa superior de césped y subsuperficie de tierra.
+      // Se aplica después del relleno de piedra para preservar el bioma de superficie.
+      if (maxY > -63) {
+        _setGeneratedBlock(x, maxY, z, 'grass');
+      }
+      for (let y = Math.max(-63, maxY - 4); y < maxY; y++) {
+        _setGeneratedBlock(x, y, z, 'dirt');
       }
 
       // Probabilidad de árbol: usar el mismo noise como pseudo-RNG
       // en lugar de Math.random() global (no seeded) para que todos
       // los clientes coloquen árboles en las mismas posiciones.
-      // _noise2D con una escala muy fina produce valores en [-1,1]
-      // distribuidos uniformemente → mapeamos a [0,1] y aplicamos umbral.
-      const treeRng = (_noise2D(x * 3.7, z * 3.7) + 1) * 0.5;  // [0,1]
+      const treeRng = (_noise2D(x * 3.7, z * 3.7) + 1) * 0.5;
       if (maxY >= 6 && treeRng < 0.015) {
         _generateTree(x, maxY, z);
       }
     }
   }
+
+  // ── Pasada 2: tallar cuevas en piedra/tierra ────────────────────
+  _carveCaves(xStart, xEnd, zStart, zEnd, CS, surfaceY, minY);
+}
+
+function _deepenChunk(cx, cz, currentMinY, targetMinY) {
+  if (targetMinY >= currentMinY) return;
+
+  const CS     = CONFIG.CHUNK_SIZE;
+  const xStart = cx * CS, xEnd = xStart + CS;
+  const zStart = cz * CS, zEnd = zStart + CS;
+  const surfaceY = new Int16Array(CS * CS);
+
+  for (let x = xStart; x < xEnd; x++) {
+    for (let z = zStart; z < zEnd; z++) {
+      const maxY = _getSurfaceHeight(x, z);
+      surfaceY[(x - xStart) * CS + (z - zStart)] = maxY;
+
+      const fillTop = Math.min(currentMinY - 1, maxY);
+      for (let y = targetMinY; y <= fillTop; y++) {
+        if (!hasBlock(x, y, z)) _setGeneratedBlock(x, y, z, 'stone');
+      }
+    }
+  }
+
+  _carveCaves(xStart, xEnd, zStart, zEnd, CS, surfaceY, targetMinY, currentMinY - 1);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -803,6 +1060,7 @@ export function deserializeWorld(blocksArray) {
 
   // Resetear estado de chunks
   _generatedChunks.clear();
+  _chunkMinYGenerated.clear();
   _lastChunkX = null;
   _lastChunkZ = null;
 
@@ -835,10 +1093,12 @@ export function deserializeWorld(blocksArray) {
   //  updateChunks() no regenerará terreno encima de bloques cargados.
   const CS = CONFIG.CHUNK_SIZE;
   for (const data of blockMap.values()) {
-    _generatedChunks.add(chunkKey(
+    const key = chunkKey(
       Math.floor(data.x / CS),
       Math.floor(data.z / CS),
-    ));
+    );
+    _generatedChunks.add(key);
+    _chunkMinYGenerated.set(key, -63);
   }
 
   // ── Paso 4: construir mallas para todos los chunks del save ──────

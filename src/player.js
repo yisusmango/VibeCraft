@@ -455,7 +455,7 @@ export function updatePhysics(dt, camera, controls) {
   }
 
   // 4. ── BARRERA DE SEGURIDAD — respawn si cae fuera del mundo
-  if (player.position.y < -20) {
+  if (player.position.y < -100) {
     player.position.set(CONFIG.WORLD_SIZE / 2, 32, CONFIG.WORLD_SIZE / 2);
     player.velocity.set(0, 0, 0);
   }

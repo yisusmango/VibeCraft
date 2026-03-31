@@ -83,6 +83,9 @@ const io     = new SocketIO(http, {
     origin: '*',
     methods: ['GET', 'POST'],
   },
+  // Margen amplio para cargas iniciales pesadas en cliente (chunks profundos).
+  pingTimeout: 60000,
+  pingInterval: 60000,
 });
 
 const PORT = process.env.PORT ?? 3000;
@@ -100,6 +103,19 @@ app.use(express.static('.'));
 //  • lastSeen    — timestamp del último playerUpdate recibido.
 const SERVER_SEED  = Math.random();
 const playerState  = new Map();
+const blockHistory = [];
+const MAX_BLOCK_HISTORY = 6000;
+
+function _toCompactBlockDelta(entry) {
+  return [
+    entry.action,
+    entry.x,
+    entry.y,
+    entry.z,
+    entry.type ?? null,
+    entry.normal ? [entry.normal.x, entry.normal.y, entry.normal.z] : null,
+  ];
+}
 
 // ═══════════════════════════════════════════════════════════════
 //  ⏱️  CICLO DE DÍA/NOCHE PERSISTENTE EN EL SERVIDOR
@@ -194,6 +210,8 @@ io.on('connection', (socket) => {
     seed:    SERVER_SEED,
     dayT:    globalDayT,
     players: Array.from(playerState.values()),
+    // Snapshot compacto de cambios recientes del mundo (delta-only, sin aire).
+    worldDelta: blockHistory.map(_toCompactBlockDelta),
   });
 
   // ── playerUpdate ───────────────────────────────────────────────
@@ -281,6 +299,19 @@ io.on('connection', (socket) => {
       typeof data?.y !== 'number' ||
       typeof data?.z !== 'number'
     ) return;
+
+    // Guardar solo deltas (add/remove), nunca aire completo de columnas.
+    blockHistory.push({
+      action: data.action,
+      x: data.x,
+      y: data.y,
+      z: data.z,
+      type: data.type ?? null,
+      normal: data.normal ?? null,
+    });
+    if (blockHistory.length > MAX_BLOCK_HISTORY) {
+      blockHistory.splice(0, blockHistory.length - MAX_BLOCK_HISTORY);
+    }
 
     socket.broadcast.emit('blockUpdate', data);
   });

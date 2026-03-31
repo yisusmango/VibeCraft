@@ -243,7 +243,7 @@ export function initMultiplayer(scene, environment = null) {
       .then(({ io }) => {
         _socket = io(SERVER_URL, {
           reconnectionAttempts: 5,
-          timeout: 5000,
+          timeout: 60000,
         });
 
         // ── connect: enviar perfil propio (skin + username) al servidor ──
@@ -275,21 +275,50 @@ export function initMultiplayer(scene, environment = null) {
         //              independientemente del dead-band, porque el cliente acaba
         //              de arrancar y su reloj parte de 0.
         //    players — snapshot completo de jugadores conectados.
-        _socket.on('worldInit', ({ seed, dayT, players }) => {
-          setNoiseSeed(seed);
-          console.info(`[VibeCraft MP] Semilla recibida: ${seed.toFixed(8)} — terreno listo.`);
+        _socket.on('worldInit', ({ seed, dayT, players, worldDelta }) => {
+          try {
+            setNoiseSeed(seed);
+            console.info(`[VibeCraft MP] Semilla recibida: ${seed.toFixed(8)} — terreno listo.`);
 
-          // Snap incondicional en la sincronización inicial: el reloj del
-          // cliente parte de 0 y debe saltar al tiempo actual del servidor.
-          if (_environment && typeof dayT === 'number') {
-            _environment.setDayT(dayT);
-            console.info(`[VibeCraft MP] Reloj sincronizado (worldInit): dayT=${dayT.toFixed(4)}`);
+            // Snap incondicional en la sincronización inicial: el reloj del
+            // cliente parte de 0 y debe saltar al tiempo actual del servidor.
+            if (_environment && typeof dayT === 'number') {
+              _environment.setDayT(dayT);
+              console.info(`[VibeCraft MP] Reloj sincronizado (worldInit): dayT=${dayT.toFixed(4)}`);
+            }
+
+            // Aplicar delta histórico del mundo (compacto, sin enviar aire).
+            if (Array.isArray(worldDelta) && worldDelta.length > 0) {
+              const CS = 16;
+              const dirty = new Set();
+              for (const row of worldDelta) {
+                if (!Array.isArray(row) || row.length < 4) continue;
+                const [action, x, y, z, type, n] = row;
+                if (typeof x !== 'number' || typeof y !== 'number' || typeof z !== 'number') continue;
+                if (action === 'add') {
+                  const normal = Array.isArray(n) && n.length === 3
+                    ? { x: n[0], y: n[1], z: n[2] }
+                    : null;
+                  addBlock(x, y, z, type ?? 'grass', normal, { rebuild: false });
+                } else if (action === 'remove') {
+                  removeBlock(x, y, z, { rebuild: false });
+                }
+                dirty.add(`${Math.floor(x / CS)},${Math.floor(z / CS)}`);
+              }
+              for (const key of dirty) {
+                const [cx, cz] = key.split(',').map(Number);
+                buildChunkMesh(cx, cz);
+              }
+            }
+
+            players.forEach(data => {
+              if (data.id !== _myId) _upsertPlayer(data);
+            });
+            resolve(seed);
+          } catch (err) {
+            console.error('[VibeCraft MP] Error procesando worldInit:', err);
+            reject(err);
           }
-
-          players.forEach(data => {
-            if (data.id !== _myId) _upsertPlayer(data);
-          });
-          resolve(seed);
         });
 
         // ── Actualización de posición de un jugador remoto ───────────
@@ -359,9 +388,9 @@ export function initMultiplayer(scene, environment = null) {
         _socket.on('blockUpdate', (data) => {
           const CS = 16;  // CONFIG.CHUNK_SIZE — inline para evitar import circular
           if (data.action === 'add') {
-            addBlock(data.x, data.y, data.z, data.type, data.normal ?? null);
+            addBlock(data.x, data.y, data.z, data.type, data.normal ?? null, { rebuild: false });
           } else if (data.action === 'remove') {
-            removeBlock(data.x, data.y, data.z);
+            removeBlock(data.x, data.y, data.z, { rebuild: false });
           }
           buildChunkMesh(
             Math.floor(data.x / CS),

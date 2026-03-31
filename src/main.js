@@ -303,7 +303,8 @@ function spawnPlayerSafe() {
   const sx = Math.floor(player.position.x);
   const sz = Math.floor(player.position.z);
   let y = 64;
-  while (y > 0 && !hasBlock(sx, y, sz)) y--;
+  while (y >= -64 && !hasBlock(sx, y, sz)) y--;
+  if (y < -64) y = -64;
   player.position.set(sx + 0.5, y + 2.0, sz + 0.5);
   player.velocity.set(0, 0, 0);
 }
@@ -406,7 +407,7 @@ document.getElementById('btn-world-new').addEventListener('click', async () => {
   deserializeWorld([]);
   setNoiseSeed(Math.random());
   resetChunks();
-  updateChunks(player.position.x, player.position.z);
+  updateChunks(player.position.x, player.position.z, player.position.y);
   spawnPlayerSafe();
 
   try {
@@ -476,7 +477,7 @@ async function startMultiplayer() {
 
     deserializeWorld([]);
     resetChunks();   // usa la semilla ya establecida por setNoiseSeed()
-    updateChunks(player.position.x, player.position.z);
+    updateChunks(player.position.x, player.position.z, player.position.y);
     spawnPlayerSafe();
     launchWorld();
 
@@ -622,7 +623,7 @@ function animate() {
     //  siguen corriendo con normalidad.
     if (controls.isLocked) {
       updatePhysics(dt, camera, controls);
-      updateChunks(player.position.x, player.position.z);
+      updateChunks(player.position.x, player.position.z, player.position.y);
       updateRaycaster(camera, controls);
       sendUpdate(player.position, camera);  // multiplayer: enviar estado local
     }
