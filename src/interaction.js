@@ -37,7 +37,7 @@ import * as THREE from 'three';
 import { CONFIG, HALF_W }                                              from './config.js';
 import { addBlock, removeBlock, hasBlock, getBlockMeshes, getBlockType, MATERIALS } from './world.js';
 import { spawnParticles }                                              from './particles.js';
-import { player, triggerPunch }                                        from './player.js';
+import { player, triggerPunch, setMining }                                        from './player.js';
 import { getCurrentBlockType }                                         from './ui.js';
 import { sendBlockUpdate, sendPunchAction }                            from './multiplayer.js';
 import { playBreakSound, playPlaceSound }                              from './audio.js';
@@ -269,8 +269,12 @@ export function initInteraction(scene, controls) {
   document.addEventListener('mousedown', (e) => {
     if (!controls.isLocked) return;
     e.preventDefault();
-    if (e.button === 0) { destroyBlock(); triggerPunch(); sendPunchAction(); }
+    if (e.button === 0) { destroyBlock(); triggerPunch(); sendPunchAction(); setMining(true); }
     if (e.button === 2) { placeBlock();   triggerPunch(); sendPunchAction(); }
+  });
+
+  document.addEventListener('mouseup', (e) => {
+    if (e.button === 0) setMining(false);
   });
 
   document.addEventListener('contextmenu', (e) => e.preventDefault());

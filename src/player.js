@@ -271,6 +271,7 @@ let _targetSway = new THREE.Vector2();  // sway actual (suavizado hacia 0)
 // ═══════════════════════════════════════════════════════════════
 
 let _fpArm            = null;
+let _armR             = null;   // v0.4.1: referencia directa a armR para pivotar solo el brazo
 let _camera           = null;
 let _heldMesh         = null;
 let _currentHeldType  = null;
@@ -295,6 +296,17 @@ const PUNCH_DURATION = 0.20;
 const PUNCH_ANGLE    = Math.PI / 3;
 let _punchTimer      = 0;
 let _isPunching      = false;
+
+// ── Mining Swing — animación continua de picado (v0.4.1) ─────────────────
+//  MINING_SWING_SPEED → frecuencia del ciclo de swing (rad/seg).
+//  MINING_SWING_ANGLE → amplitud máxima en radianes (~23°).
+//  MINING_RETURN_LERP → velocidad de suavizado al dejar de picar.
+const MINING_SWING_SPEED = 15.0;
+const MINING_SWING_ANGLE = 0.4;
+const MINING_RETURN_LERP = 8.0;
+
+let _isMining      = false;
+let _miningTime    = 0;
 
 // ── v0.3.7 — Ítem como hermano de armR en armContainer (sin shear) ────────
 //
@@ -360,6 +372,16 @@ export function triggerPunch() {
 
 export function isPunching() {
   return _isPunching;
+}
+
+/**
+ * Activa o desactiva la animación continua de Mining Swing.
+ * Llamar desde interaction.js en mousedown/mouseup.
+ * @param {boolean} active
+ */
+export function setMining(active) {
+  _isMining = active;
+  if (!active) _miningTime = 0;
 }
 
 // Vectores temporales reutilizables — evita crear new Vector3 cada frame
@@ -547,6 +569,27 @@ export function updatePhysics(dt, camera, controls) {
       _fpArm.rotation.y += (ARM_REST_ROT.y - _fpArm.rotation.y) * lf;
       _fpArm.rotation.z += (ARM_REST_ROT.z - _fpArm.rotation.z) * lf;
     }
+
+    // ── Mining Swing — rota armR en su eje X local (pivote en el hombro) ──
+    //  Se aplica a _armR (no al armContainer) para que la BASE del brazo
+    //  permanezca fija y solo el extremo distal balancee hacia adelante.
+    //  El armContainer mantiene siempre ARM_REST_ROT, evitando que el
+    //  bloque de la mano se desplace fuera de su posición de reposo.
+    //  Durante Punch, armR vuelve suavemente a 0 para no chocar con el golpe.
+    if (_armR) {
+      if (_isPunching) {
+        // Punch tiene prioridad: devolver armR a neutro sin salto
+        _armR.rotation.x += (0 - _armR.rotation.x) * Math.min(1, MINING_RETURN_LERP * dt);
+      } else if (_isMining) {
+        _miningTime += dt;
+        _armR.rotation.x = Math.sin(_miningTime * MINING_SWING_SPEED) * MINING_SWING_ANGLE;
+      } else {
+        // Soltar botón: lerp suave de vuelta a 0 y reset del acumulador
+        _miningTime  = 0;
+        _armR.rotation.x += (0 - _armR.rotation.x) * Math.min(1, MINING_RETURN_LERP * dt);
+        if (Math.abs(_armR.rotation.x) < 0.001) _armR.rotation.x = 0;
+      }
+    }
   }
 
   // 8. ── ARM SWAY (inercia del brazo al mover la cámara) ──────────
@@ -677,6 +720,7 @@ export function initPlayer(controls, camera) {
   armR.scale.set(0.4, 1.2, 0.4);
   armR.renderOrder = 999;
   armR.frustumCulled = false;
+  _armR = armR;   // v0.4.1: guardar referencia para pivotar solo el brazo en mining
   armR.traverse(child => {
     if (child.isMesh) {
       child.renderOrder = 999;
